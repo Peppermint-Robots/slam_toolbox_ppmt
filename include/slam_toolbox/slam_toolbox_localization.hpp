@@ -45,12 +45,12 @@ protected:
 
   virtual bool serializePoseGraphCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::SerializePoseGraph::Request> req,
-    std::shared_ptr<slam_toolbox::srv::SerializePoseGraph::Response> resp) override;
+    const std::shared_ptr<slam_toolbox_ppmt::srv::SerializePoseGraph::Request> req,
+    std::shared_ptr<slam_toolbox_ppmt::srv::SerializePoseGraph::Response> resp) override;
   virtual bool deserializePoseGraphCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::DeserializePoseGraph::Request> req,
-    std::shared_ptr<slam_toolbox::srv::DeserializePoseGraph::Response> resp) override;
+    const std::shared_ptr<slam_toolbox_ppmt::srv::DeserializePoseGraph::Request> req,
+    std::shared_ptr<slam_toolbox_ppmt::srv::DeserializePoseGraph::Response> resp) override;
 
   virtual LocalizedRangeScan * addScan(
     LaserRangeFinder * laser,

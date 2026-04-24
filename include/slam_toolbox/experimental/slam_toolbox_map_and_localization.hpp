@@ -37,12 +37,12 @@ protected:
     sensor_msgs::msg::LaserScan::ConstSharedPtr scan) override;
   bool serializePoseGraphCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::SerializePoseGraph::Request> req,
-    std::shared_ptr<slam_toolbox::srv::SerializePoseGraph::Response> resp) override;
+    const std::shared_ptr<slam_toolbox_ppmt::srv::SerializePoseGraph::Request> req,
+    std::shared_ptr<slam_toolbox_ppmt::srv::SerializePoseGraph::Response> resp) override;
   bool deserializePoseGraphCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::DeserializePoseGraph::Request> req,
-    std::shared_ptr<slam_toolbox::srv::DeserializePoseGraph::Response> resp) override;
+    const std::shared_ptr<slam_toolbox_ppmt::srv::DeserializePoseGraph::Request> req,
+    std::shared_ptr<slam_toolbox_ppmt::srv::DeserializePoseGraph::Response> resp) override;
   bool setLocalizationModeCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
     const std::shared_ptr<std_srvs::srv::SetBool::Request> req,

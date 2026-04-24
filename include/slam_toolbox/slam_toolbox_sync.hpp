@@ -38,15 +38,15 @@ protected:
   void laserCallback(sensor_msgs::msg::LaserScan::ConstSharedPtr scan) override;
   bool clearQueueCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::ClearQueue::Request> req,
-    std::shared_ptr<slam_toolbox::srv::ClearQueue::Response> resp);
+    const std::shared_ptr<slam_toolbox_ppmt::srv::ClearQueue::Request> req,
+    std::shared_ptr<slam_toolbox_ppmt::srv::ClearQueue::Response> resp);
   bool deserializePoseGraphCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::DeserializePoseGraph::Request> req,
-    std::shared_ptr<slam_toolbox::srv::DeserializePoseGraph::Response> resp) override;
+    const std::shared_ptr<slam_toolbox_ppmt::srv::DeserializePoseGraph::Request> req,
+    std::shared_ptr<slam_toolbox_ppmt::srv::DeserializePoseGraph::Response> resp) override;
 
   std::queue<PosedScan> q_;
-  std::shared_ptr<rclcpp::Service<slam_toolbox::srv::ClearQueue>> ssClear_;
+  std::shared_ptr<rclcpp::Service<slam_toolbox_ppmt::srv::ClearQueue>> ssClear_;
   boost::mutex q_mutex_;
 };
 

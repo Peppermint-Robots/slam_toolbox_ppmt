@@ -37,12 +37,12 @@ public:
 protected:
   bool saveMapCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::SaveMap::Request> request,
-    std::shared_ptr<slam_toolbox::srv::SaveMap::Response> response);
+    const std::shared_ptr<slam_toolbox_ppmt::srv::SaveMap::Request> request,
+    std::shared_ptr<slam_toolbox_ppmt::srv::SaveMap::Response> response);
 
 private:
   rclcpp::Node::SharedPtr node_;
-  rclcpp::Service<slam_toolbox::srv::SaveMap>::SharedPtr server_;
+  rclcpp::Service<slam_toolbox_ppmt::srv::SaveMap>::SharedPtr server_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr sub_;
   std::string service_name_, map_name_;
   bool received_map_;

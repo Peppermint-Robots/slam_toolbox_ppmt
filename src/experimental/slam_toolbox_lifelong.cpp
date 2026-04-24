@@ -321,8 +321,8 @@ void LifelongSlamToolbox::updateScoresSlamGraph(
 /*****************************************************************************/
 bool LifelongSlamToolbox::deserializePoseGraphCallback(
   const std::shared_ptr<rmw_request_id_t> request_header,
-  const std::shared_ptr<slam_toolbox::srv::DeserializePoseGraph::Request> req,
-  std::shared_ptr<slam_toolbox::srv::DeserializePoseGraph::Response> resp)
+  const std::shared_ptr<slam_toolbox_ppmt::srv::DeserializePoseGraph::Request> req,
+  std::shared_ptr<slam_toolbox_ppmt::srv::DeserializePoseGraph::Response> resp)
 /*****************************************************************************/
 {
   if (req->match_type == procType::LOCALIZE_AT_POSE) {

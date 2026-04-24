@@ -58,28 +58,28 @@ SlamToolboxPlugin::SlamToolboxPlugin(QWidget * parent)
     std::bind(&SlamToolboxPlugin::InitialPoseCallback, this, std::placeholders::_1));
 
   _serialize =
-    ros_node_->create_client<slam_toolbox::srv::SerializePoseGraph>(
+    ros_node_->create_client<slam_toolbox_ppmt::srv::SerializePoseGraph>(
     "/slam_toolbox/serialize_map");
   _load_map =
-    ros_node_->create_client<slam_toolbox::srv::DeserializePoseGraph>(
+    ros_node_->create_client<slam_toolbox_ppmt::srv::DeserializePoseGraph>(
     "/slam_toolbox/deserialize_map");
-  _clearChanges = ros_node_->create_client<slam_toolbox::srv::Clear>(
+  _clearChanges = ros_node_->create_client<slam_toolbox_ppmt::srv::Clear>(
     "/slam_toolbox/clear_changes");
-  _saveChanges = ros_node_->create_client<slam_toolbox::srv::LoopClosure>(
+  _saveChanges = ros_node_->create_client<slam_toolbox_ppmt::srv::LoopClosure>(
     "/slam_toolbox/manual_loop_closure");
-  _saveMap = ros_node_->create_client<slam_toolbox::srv::SaveMap>(
+  _saveMap = ros_node_->create_client<slam_toolbox_ppmt::srv::SaveMap>(
     "/slam_toolbox/save_map");
-  _clearQueue = ros_node_->create_client<slam_toolbox::srv::ClearQueue>(
+  _clearQueue = ros_node_->create_client<slam_toolbox_ppmt::srv::ClearQueue>(
     "/slam_toolbox/clear_queue");
   _interactive =
-    ros_node_->create_client<slam_toolbox::srv::ToggleInteractive>(
+    ros_node_->create_client<slam_toolbox_ppmt::srv::ToggleInteractive>(
     "/slam_toolbox/toggle_interactive_mode");
-  _pause_measurements = ros_node_->create_client<slam_toolbox::srv::Pause>(
+  _pause_measurements = ros_node_->create_client<slam_toolbox_ppmt::srv::Pause>(
     "/slam_toolbox/pause_new_measurements");
   _load_submap_for_merging =
-    ros_node_->create_client<slam_toolbox::srv::AddSubmap>(
+    ros_node_->create_client<slam_toolbox_ppmt::srv::AddSubmap>(
     "/slam_toolbox/add_submap");
-  _merge = ros_node_->create_client<slam_toolbox::srv::MergeMaps>(
+  _merge = ros_node_->create_client<slam_toolbox_ppmt::srv::MergeMaps>(
     "/slam_toolbox/merge_submaps");
 
   _vbox = new QVBoxLayout();
@@ -278,7 +278,7 @@ void SlamToolboxPlugin::SerializeMap()
 /*****************************************************************************/
 {
   auto request =
-    std::make_shared<slam_toolbox::srv::SerializePoseGraph::Request>();
+    std::make_shared<slam_toolbox_ppmt::srv::SerializePoseGraph::Request>();
   request->filename = _line3->text().toStdString();
   auto result_future = _serialize->async_send_request(request);
 
@@ -296,10 +296,10 @@ void SlamToolboxPlugin::SerializeMap()
 void SlamToolboxPlugin::DeserializeMap()
 /*****************************************************************************/
 {
-  typedef slam_toolbox::srv::DeserializePoseGraph::Request procType;
+  typedef slam_toolbox_ppmt::srv::DeserializePoseGraph::Request procType;
 
   auto request =
-    std::make_shared<slam_toolbox::srv::DeserializePoseGraph::Request>();
+    std::make_shared<slam_toolbox_ppmt::srv::DeserializePoseGraph::Request>();
   request->filename = _line4->text().toStdString();
   if (_match_type == PROCESS_FIRST_NODE_CMT) {
     request->match_type = procType::START_AT_FIRST_NODE;
@@ -353,7 +353,7 @@ void SlamToolboxPlugin::DeserializeMap()
 void SlamToolboxPlugin::LoadSubmap()
 /*****************************************************************************/
 {
-  auto request = std::make_shared<slam_toolbox::srv::AddSubmap::Request>();
+  auto request = std::make_shared<slam_toolbox_ppmt::srv::AddSubmap::Request>();
   request->filename = _line2->text().toStdString();
   auto result_future = _load_submap_for_merging->async_send_request(request);
 
@@ -370,7 +370,7 @@ void SlamToolboxPlugin::LoadSubmap()
 void SlamToolboxPlugin::GenerateMap()
 /*****************************************************************************/
 {
-  auto request = std::make_shared<slam_toolbox::srv::MergeMaps::Request>();
+  auto request = std::make_shared<slam_toolbox_ppmt::srv::MergeMaps::Request>();
   auto result_future = _merge->async_send_request(request);
 
   if (rclcpp::spin_until_future_complete(ros_node_, result_future,
@@ -387,7 +387,7 @@ void SlamToolboxPlugin::GenerateMap()
 void SlamToolboxPlugin::ClearChanges()
 /*****************************************************************************/
 {
-  auto request = std::make_shared<slam_toolbox::srv::Clear::Request>();
+  auto request = std::make_shared<slam_toolbox_ppmt::srv::Clear::Request>();
   auto result_future = _clearChanges->async_send_request(request);
 
   if (rclcpp::spin_until_future_complete(ros_node_, result_future,
@@ -404,7 +404,7 @@ void SlamToolboxPlugin::ClearChanges()
 void SlamToolboxPlugin::SaveChanges()
 /*****************************************************************************/
 {
-  auto request = std::make_shared<slam_toolbox::srv::LoopClosure::Request>();
+  auto request = std::make_shared<slam_toolbox_ppmt::srv::LoopClosure::Request>();
   auto result_future = _saveChanges->async_send_request(request);
 
   if (rclcpp::spin_until_future_complete(ros_node_, result_future,
@@ -421,7 +421,7 @@ void SlamToolboxPlugin::SaveChanges()
 void SlamToolboxPlugin::SaveMap()
 /*****************************************************************************/
 {
-  auto request = std::make_shared<slam_toolbox::srv::SaveMap::Request>();
+  auto request = std::make_shared<slam_toolbox_ppmt::srv::SaveMap::Request>();
   request->name.data = _line1->text().toStdString();
   auto result_future = _saveMap->async_send_request(request);
 
@@ -440,7 +440,7 @@ void SlamToolboxPlugin::SaveMap()
 void SlamToolboxPlugin::ClearQueue()
 /*****************************************************************************/
 {
-  auto request = std::make_shared<slam_toolbox::srv::ClearQueue::Request>();
+  auto request = std::make_shared<slam_toolbox_ppmt::srv::ClearQueue::Request>();
   auto result_future = _clearQueue->async_send_request(request);
 
   if (rclcpp::spin_until_future_complete(ros_node_, result_future,
@@ -458,7 +458,7 @@ void SlamToolboxPlugin::InteractiveCb(int state)
 /*****************************************************************************/
 {
   auto request =
-    std::make_shared<slam_toolbox::srv::ToggleInteractive::Request>();
+    std::make_shared<slam_toolbox_ppmt::srv::ToggleInteractive::Request>();
   auto result_future = _interactive->async_send_request(request);
 
   if (rclcpp::spin_until_future_complete(ros_node_, result_future,
@@ -475,7 +475,7 @@ void SlamToolboxPlugin::InteractiveCb(int state)
 void SlamToolboxPlugin::PauseMeasurementsCb(int state)
 /*****************************************************************************/
 {
-  auto request = std::make_shared<slam_toolbox::srv::Pause::Request>();
+  auto request = std::make_shared<slam_toolbox_ppmt::srv::Pause::Request>();
   auto result_future = _pause_measurements->async_send_request(request);
 
   if (rclcpp::spin_until_future_complete(ros_node_, result_future,

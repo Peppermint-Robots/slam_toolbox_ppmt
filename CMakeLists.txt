@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(slam_toolbox)
+project(slam_toolbox_ppmt)
 
 set(CMAKE_BUILD_TYPE Release) #None, Debug, Release, RelWithDebInfo, MinSizeRel
 if(NOT CMAKE_CXX_STANDARD)
@@ -138,7 +138,7 @@ target_link_libraries(ceres_solver_plugin ${CERES_LIBRARIES}
 )
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(ceres_solver_plugin "${cpp_typesupport_target}")
-pluginlib_export_plugin_description_file(slam_toolbox solver_plugins.xml)
+pluginlib_export_plugin_description_file(slam_toolbox_ppmt solver_plugins.xml)
 
 #### Tool lib for mapping
 add_library(toolbox_common src/slam_toolbox_common.cpp src/map_saver.cpp src/loop_closure_assistant.cpp src/laser_utils.cpp src/slam_mapper.cpp)

@@ -7,9 +7,9 @@ def generate_launch_description():
     return LaunchDescription([
         launch_ros.actions.Node(
           parameters=[
-            get_package_share_directory("slam_toolbox") + '/config/mapper_params_offline.yaml'
+            get_package_share_directory("slam_toolbox_ppmt") + '/config/mapper_params_offline.yaml'
           ],
-          package='slam_toolbox',
+          package='slam_toolbox_ppmt',
           executable='sync_slam_toolbox_node',
           name='slam_toolbox',
           output='screen'

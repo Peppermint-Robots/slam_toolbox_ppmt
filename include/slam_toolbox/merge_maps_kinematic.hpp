@@ -62,12 +62,12 @@ private:
   // callback
   bool mergeMapCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::MergeMaps::Request> req,
-    std::shared_ptr<slam_toolbox::srv::MergeMaps::Response> resp);
+    const std::shared_ptr<slam_toolbox_ppmt::srv::MergeMaps::Request> req,
+    std::shared_ptr<slam_toolbox_ppmt::srv::MergeMaps::Response> resp);
   bool addSubmapCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::AddSubmap::Request> req,
-    std::shared_ptr<slam_toolbox::srv::AddSubmap::Response> resp);
+    const std::shared_ptr<slam_toolbox_ppmt::srv::AddSubmap::Request> req,
+    std::shared_ptr<slam_toolbox_ppmt::srv::AddSubmap::Response> resp);
   void processInteractiveFeedback(
     visualization_msgs::msg::InteractiveMarkerFeedback::ConstSharedPtr feedback);
   void kartoToROSOccupancyGrid(
@@ -84,8 +84,8 @@ private:
   // ROS-y-ness
   std::vector<std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::MapMetaData>>> sstmS_;
   std::vector<std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>>> sstS_;
-  std::shared_ptr<rclcpp::Service<slam_toolbox::srv::MergeMaps>> ssMap_;
-  std::shared_ptr<rclcpp::Service<slam_toolbox::srv::AddSubmap>> ssSubmap_;
+  std::shared_ptr<rclcpp::Service<slam_toolbox_ppmt::srv::MergeMaps>> ssMap_;
+  std::shared_ptr<rclcpp::Service<slam_toolbox_ppmt::srv::AddSubmap>> ssSubmap_;
 
   // karto bookkeeping
   std::map<std::string, laser_utils::LaserMetadata> lasers_;

@@ -83,12 +83,12 @@ protected:
     std::shared_ptr<nav_msgs::srv::GetMap::Response> res);
   virtual bool serializePoseGraphCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::SerializePoseGraph::Request> req,
-    std::shared_ptr<slam_toolbox::srv::SerializePoseGraph::Response> resp);
+    const std::shared_ptr<slam_toolbox_ppmt::srv::SerializePoseGraph::Request> req,
+    std::shared_ptr<slam_toolbox_ppmt::srv::SerializePoseGraph::Response> resp);
   virtual bool deserializePoseGraphCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::DeserializePoseGraph::Request> req,
-    std::shared_ptr<slam_toolbox::srv::DeserializePoseGraph::Response> resp);
+    const std::shared_ptr<slam_toolbox_ppmt::srv::DeserializePoseGraph::Request> req,
+    std::shared_ptr<slam_toolbox_ppmt::srv::DeserializePoseGraph::Response> resp);
 
   // Loaders
   void loadSerializedPoseGraph(std::unique_ptr<karto::Mapper> &, std::unique_ptr<karto::Dataset> &);
@@ -123,8 +123,8 @@ protected:
   bool isPaused(const PausedApplication & app);
   bool pauseNewMeasurementsCallback(
     const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<slam_toolbox::srv::Pause::Request> req,
-    std::shared_ptr<slam_toolbox::srv::Pause::Response> resp);
+    const std::shared_ptr<slam_toolbox_ppmt::srv::Pause::Request> req,
+    std::shared_ptr<slam_toolbox_ppmt::srv::Pause::Response> resp);
 
   // ROS-y-ness
   std::unique_ptr<tf2_ros::Buffer> tf_;
@@ -136,9 +136,9 @@ protected:
   std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::MapMetaData>> sstm_;
   std::shared_ptr<rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>> pose_pub_;
   std::shared_ptr<rclcpp::Service<nav_msgs::srv::GetMap>> ssMap_;
-  std::shared_ptr<rclcpp::Service<slam_toolbox::srv::Pause>> ssPauseMeasurements_;
-  std::shared_ptr<rclcpp::Service<slam_toolbox::srv::SerializePoseGraph>> ssSerialize_;
-  std::shared_ptr<rclcpp::Service<slam_toolbox::srv::DeserializePoseGraph>> ssDesserialize_;
+  std::shared_ptr<rclcpp::Service<slam_toolbox_ppmt::srv::Pause>> ssPauseMeasurements_;
+  std::shared_ptr<rclcpp::Service<slam_toolbox_ppmt::srv::SerializePoseGraph>> ssSerialize_;
+  std::shared_ptr<rclcpp::Service<slam_toolbox_ppmt::srv::DeserializePoseGraph>> ssDesserialize_;
 
   // Storage for ROS parameters
   std::string odom_frame_, map_frame_, base_frame_, map_name_, scan_topic_;

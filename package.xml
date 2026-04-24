@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>slam_toolbox</name>
+  <name>slam_toolbox_ppmt</name>
   <version>2.6.9</version>
   <description>
      This package provides a sped up improved slam karto with updated SDK and visualization and modification toolsets
@@ -83,7 +83,7 @@
 
   <export>
     <build_type>ament_cmake</build_type>
-    <slam_toolbox plugin="${prefix}/solver_plugins.xml" />
+    <slam_toolbox_ppmt plugin="${prefix}/solver_plugins.xml" />
     <rviz_common plugin="${prefix}/rviz_plugins.xml"/>
   </export>
 
