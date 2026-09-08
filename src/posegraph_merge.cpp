@@ -257,18 +257,16 @@ void usage(const char * argv0)
   std::cerr <<
     "Merge posegraph2 into posegraph1.\n\n"
     "Usage:\n  " << argv0 <<
-    " --in1 <stem> --in2 <stem> [--align]\n\n"
+    " --in1 <stem> --in2 <stem>\n\n"
     "Stems carry no extension: <stem>.posegraph and <stem>.data are both read.\n"
     "posegraph1 and posegraph2 are assumed to already be expressed in the same\n"
     "  coordinate frame - this tool performs no alignment.\n"
-    "--align replays posegraph2's scans through posegraph1's own scan matcher/solver\n"
-    "  instead of just splicing vertices/edges in as-is, so overlapping content\n"
-    "  reconciles via loop closure instead of being drawn twice. Without it, no solver\n"
-    "  is created and posegraph1's own vertex poses are never touched.\n\n"
-    "Output is always written in the current working directory, as merged_aligned.* when\n"
-    "  --align is set, or merged_unaligned.* otherwise: .posegraph/.data (the fused\n"
-    "  graph), .pgm/.yaml (its occupancy grid), and _graph.png (its vertices/edges\n"
-    "  overlaid on that grid).\n";
+    "posegraph1's vertices/edges are spliced into the fused graph as-is; posegraph2's\n"
+    "  scans are then replayed through the fused graph's own scan matcher/solver, so\n"
+    "  overlapping content reconciles via loop closure instead of being drawn twice.\n\n"
+    "Output is always written in the current working directory, as merged.posegraph/\n"
+    "  .data (the fused graph), merged.pgm/.yaml (its occupancy grid), and\n"
+    "  merged_graph.png (its vertices/edges overlaid on that grid).\n";
 }
 
 }  // namespace
@@ -277,7 +275,6 @@ int main(int argc, char ** argv)
 {
   std::string in1_stem;
   std::string in2_stem;
-  bool align = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -286,8 +283,6 @@ int main(int argc, char ** argv)
       in1_stem = argv[++i];
     } else if (arg == "--in2" && has_value) {
       in2_stem = argv[++i];
-    } else if (arg == "--align") {
-      align = true;
     } else if (arg == "-h" || arg == "--help") {
       usage(argv[0]);
       return 0;
@@ -495,13 +490,29 @@ int main(int argc, char ** argv)
               << graph1_shift_mean << " / " << stats.graph1_shift_max << std::endl;
   }
 
-  const std::string out_stem = in1_stem + "_merged" + (align ? "_aligned" : "_unaligned");
+  const std::string out_stem = "merged";
+
+  try {
+    fused_mapper->SaveToFile(out_stem + ".posegraph");
+    fused_dataset->SaveToFile(out_stem + ".data");
+  } catch (const std::exception & e) {
+    std::cerr << "error: failed to write merged pose graph: " << e.what() << "\n";
+    finish(1);
+  }
+  std::cout << "wrote " << out_stem << ".posegraph / .data" << std::endl;
+
   std::string err;
   if (!saveMapImage(final_scans, 0.05, out_stem, err)) {
     std::cerr << "error: failed to write merged map: " << err << "\n";
     finish(1);
   }
   std::cout << "wrote " << out_stem << ".pgm / .yaml" << std::endl;
+
+  if (!saveGraphOverlay(fused_mapper, 0.05, out_stem, err)) {
+    std::cerr << "error: failed to write graph overlay: " << err << "\n";
+    finish(1);
+  }
+  std::cout << "wrote " << out_stem << "_graph.png" << std::endl;
 
   finish(0);
 }
