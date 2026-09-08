@@ -255,19 +255,20 @@ size_t registerLasers(karto::Dataset * dataset, std::set<std::string> & register
 void usage(const char * argv0)
 {
   std::cerr <<
-    "Merge posegraph2 into posegraph1 and emit one occupancy grid.\n\n"
+    "Merge posegraph2 into posegraph1.\n\n"
     "Usage:\n  " << argv0 <<
-    " --in1 <stem> --in2 <stem> --transform x,y,theta [--align]\n\n"
+    " --in1 <stem> --in2 <stem> [--align]\n\n"
     "Stems carry no extension: <stem>.posegraph and <stem>.data are both read.\n"
-    "--transform is the rigid transform (metres/radians) that aligns posegraph2 into\n"
-    "  posegraph1's frame - this tool does not compute alignment itself.\n"
-    "--align replays posegraph2's (transformed) scans through posegraph1's own scan\n"
-    "  matcher/solver instead of just concatenating scans, so overlapping content\n"
-    "  reconciles via loop closure instead of being drawn twice. Without it, posegraph1\n"
-    "  is never touched and no solver is created.\n\n"
-    "Output is always written next to --in1, as <in1-stem>_merged_aligned.pgm/.yaml when\n"
-    "  --align is set, or <in1-stem>_merged_unaligned.pgm/.yaml otherwise. This tool\n"
-    "never re-serializes a merged pose graph - the occupancy grid is a one-shot snapshot.\n";
+    "posegraph1 and posegraph2 are assumed to already be expressed in the same\n"
+    "  coordinate frame - this tool performs no alignment.\n"
+    "--align replays posegraph2's scans through posegraph1's own scan matcher/solver\n"
+    "  instead of just splicing vertices/edges in as-is, so overlapping content\n"
+    "  reconciles via loop closure instead of being drawn twice. Without it, no solver\n"
+    "  is created and posegraph1's own vertex poses are never touched.\n\n"
+    "Output is always written in the current working directory, as merged_aligned.* when\n"
+    "  --align is set, or merged_unaligned.* otherwise: .posegraph/.data (the fused\n"
+    "  graph), .pgm/.yaml (its occupancy grid), and _graph.png (its vertices/edges\n"
+    "  overlaid on that grid).\n";
 }
 
 }  // namespace
@@ -276,7 +277,6 @@ int main(int argc, char ** argv)
 {
   std::string in1_stem;
   std::string in2_stem;
-  std::string transform_spec;
   bool align = false;
 
   for (int i = 1; i < argc; ++i) {
@@ -286,8 +286,6 @@ int main(int argc, char ** argv)
       in1_stem = argv[++i];
     } else if (arg == "--in2" && has_value) {
       in2_stem = argv[++i];
-    } else if (arg == "--transform" && has_value) {
-      transform_spec = argv[++i];
     } else if (arg == "--align") {
       align = true;
     } else if (arg == "-h" || arg == "--help") {
@@ -300,8 +298,7 @@ int main(int argc, char ** argv)
     }
   }
 
-  double tx = 0.0, ty = 0.0, ttheta = 0.0;
-  if (in1_stem.empty() || in2_stem.empty() || !parseTransform(transform_spec, tx, ty, ttheta)) {
+  if (in1_stem.empty() || in2_stem.empty()) {
     usage(argv[0]);
     return 2;
   }
