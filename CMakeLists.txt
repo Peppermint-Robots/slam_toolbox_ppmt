@@ -179,6 +179,15 @@ target_link_libraries(map_and_localization_slam_toolbox_node map_and_localizatio
 add_executable(merge_maps_kinematic src/merge_maps_kinematic.cpp)
 target_link_libraries(merge_maps_kinematic kartoSlamToolbox toolbox_common)
 
+#### Offline pose-graph merge tool (posegraph1 <- posegraph2, emits an occupancy grid)
+find_package(OpenCV 4.0.0 REQUIRED)
+find_package(yaml-cpp REQUIRED)
+add_executable(posegraph_merge src/posegraph_merge.cpp)
+target_include_directories(posegraph_merge PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(posegraph_merge kartoSlamToolbox toolbox_common ceres_solver_plugin
+                                       ${OpenCV_LIBRARIES} yaml-cpp)
+ament_target_dependencies(posegraph_merge rclcpp)
+
 #### testing
 #if(BUILD_TESTING)
 #  find_package(ament_cmake_gtest REQUIRED)
@@ -201,6 +210,7 @@ install(TARGETS async_slam_toolbox_node
                 localization_slam_toolbox_node
                 map_and_localization_slam_toolbox_node
                 merge_maps_kinematic
+                posegraph_merge
                 ${libraries}
                 kartoSlamToolbox
   ARCHIVE DESTINATION lib
