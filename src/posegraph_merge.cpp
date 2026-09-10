@@ -308,15 +308,129 @@ void replayGraph(
   }
 }
 
+/** Rigidly transform one scan's pose/geometry fields in place (barycenter, bounding box, point
+ * readings, corrected pose, odometric pose). Odometric and corrected pose both get the same
+ * correction so their relative relationship (real, internally-consistent odometry from the
+ * original updater_map recording) is preserved exactly - only their shared global placement
+ * changes, which is what lets a genuinely mismatched --node pose still get properly replayed
+ * (each scan's motion relative to the previous one is trustworthy even if the overall placement
+ * given by --node isn't quite right).
+ */
+void transformScan(karto::LocalizedRangeScan * scan, karto::Transform & correction)
+{
+  auto transformPoint = [&correction](const karto::Vector2<kt_double> & p) {
+      karto::Pose2 transformed = correction.TransformPose(karto::Pose2(p.GetX(), p.GetY(), 0.0));
+      return karto::Vector2<kt_double>(transformed.GetX(), transformed.GetY());
+    };
+
+  karto::Pose2 barycenter = scan->GetBarycenterPose();
+  karto::Pose2 barycenter_corr = correction.TransformPose(barycenter);
+  scan->SetBarycenterPose(barycenter_corr);
+
+  const karto::BoundingBox2 & bbox = scan->GetBoundingBox();
+  const karto::Vector2<kt_double> min_corr = transformPoint(bbox.GetMinimum());
+  const karto::Vector2<kt_double> max_corr = transformPoint(bbox.GetMaximum());
+  const karto::Vector2<kt_double> min_right_corr = transformPoint(
+    karto::Vector2<kt_double>(bbox.GetMaximum().GetX(), bbox.GetMinimum().GetY()));
+  const karto::Vector2<kt_double> max_left_corr = transformPoint(
+    karto::Vector2<kt_double>(bbox.GetMinimum().GetX(), bbox.GetMaximum().GetY()));
+  karto::BoundingBox2 transformed_bbox;
+  transformed_bbox.Add(min_corr);
+  transformed_bbox.Add(max_corr);
+  transformed_bbox.Add(min_right_corr);
+  transformed_bbox.Add(max_left_corr);
+  scan->SetBoundingBox(transformed_bbox);
+
+  karto::PointVectorDouble points = scan->GetPointReadings();
+  for (auto & point : points) {
+    const karto::Vector2<kt_double> corrected = transformPoint(point);
+    point.SetX(corrected.GetX());
+    point.SetY(corrected.GetY());
+  }
+  scan->SetPointReadings(points);
+
+  scan->SetCorrectedPose(correction.TransformPose(scan->GetCorrectedPose()));
+  scan->SetOdometricPose(correction.TransformPose(scan->GetOdometricPose()));
+
+  kt_bool dirty = true;
+  scan->SetIsDirty(dirty);
+  scan->GetPointReadings(false);
+}
+
+/** Read <dir>/graph-<name>.json, where <dir>/<name> is `base_map_stem` (same directory as
+ * base_map, named after its bare stem, not its full path) and return the (x, y, theta)
+ * `ros_pose` of the node identified by `node_arg`. The file is valid JSON; yaml-cpp parses it
+ * directly since JSON is a subset of YAML flow syntax, so no separate JSON library is needed.
+ * `node_arg` is matched against each node's "node_name" first (e.g. "C"); if that never matches
+ * and `node_arg` parses as an integer, it's also matched against "id".
+ */
+bool readNodeTransform(
+  const std::string & base_map_stem, const std::string & node_arg,
+  double & x, double & y, double & theta, std::string & err)
+{
+  const size_t slash = base_map_stem.find_last_of('/');
+  const std::string dir = slash == std::string::npos ? "." : base_map_stem.substr(0, slash);
+  const std::string base_name =
+    slash == std::string::npos ? base_map_stem : base_map_stem.substr(slash + 1);
+  const std::string json_path = dir + "/graph-" + base_name + ".json";
+
+  YAML::Node root;
+  try {
+    root = YAML::LoadFile(json_path);
+  } catch (const std::exception & e) {
+    err = "failed to read '" + json_path + "': " + e.what();
+    return false;
+  }
+
+  if (!root["nodes"] || !root["nodes"].IsSequence()) {
+    err = "'" + json_path + "' has no 'nodes' array";
+    return false;
+  }
+
+  bool node_arg_is_numeric = true;
+  int node_arg_as_id = 0;
+  try {
+    node_arg_as_id = std::stoi(node_arg);
+  } catch (const std::exception &) {
+    node_arg_is_numeric = false;
+  }
+
+  for (const auto & node : root["nodes"]) {
+    const bool name_matches =
+      node["node_name"] && node["node_name"].as<std::string>() == node_arg;
+    const bool id_matches =
+      node_arg_is_numeric && node["id"] && node["id"].as<int>() == node_arg_as_id;
+    if (!name_matches && !id_matches) {
+      continue;
+    }
+    if (!node["ros_pose"] || !node["ros_pose"].IsSequence() || node["ros_pose"].size() != 3) {
+      err = "node '" + node_arg + "' in '" + json_path + "' has no valid ros_pose";
+      return false;
+    }
+    x = node["ros_pose"][0].as<double>();
+    y = node["ros_pose"][1].as<double>();
+    theta = node["ros_pose"][2].as<double>();
+    return true;
+  }
+
+  err = "node '" + node_arg + "' not found in '" + json_path + "'";
+  return false;
+}
+
 void usage(const char * argv0)
 {
   std::cerr <<
     "Merge base_map and updater_map into a fused pose graph.\n\n"
     "Usage:\n  " << argv0 <<
-    " --base_map <stem> --updater_map <stem> [--display-graph]\n\n"
+    " --base_map <stem> --updater_map <stem> --node <name-or-id>\n"
+    "        [--display-graph] [--validate-transform]\n\n"
     "Stems carry no extension: <stem>.posegraph and <stem>.data are both read.\n"
-    "base_map and updater_map are assumed to already be expressed in the same\n"
-    "  coordinate frame - this tool performs no alignment.\n"
+    "--node names a node in <base_map's directory>/graph-<base_map's bare stem>.json\n"
+    "  (a node-link JSON graph with per-node \"node_name\"/\"id\" and a 3-element\n"
+    "  \"ros_pose\" [x, y, theta] in base_map's frame) - matched against node_name first,\n"
+    "  then against id if --node parses as an integer. That node's ros_pose is the rigid\n"
+    "  transform (metres/radians) applied to every updater_map scan before replay, so\n"
+    "  updater_map's own origin lands at that node's pose in base_map's frame.\n"
     "base_map's scans are replayed into the fused graph first, then updater_map's -\n"
     "  both through the fused graph's own scan matcher/solver, so overlapping content\n"
     "  reconciles via loop closure instead of being drawn twice, and both graphs get an\n"
@@ -327,6 +441,12 @@ void usage(const char * argv0)
     "  or the one ordinary link created for updater_map's first replayed scan) in red.\n"
     "  Cross-graph edges are also logged to stdout. Without this flag, the image is the\n"
     "  plain occupancy grid.\n\n"
+    "--validate-transform exits right after applying --node's transform: it writes\n"
+    "  transform_validation.png/.yaml from base_map's and updater_map's raw scans simply\n"
+    "  concatenated, with no scan matching, loop closure, or optimization - a quick visual\n"
+    "  check of whether --node placed updater_map correctly before running the full merge\n"
+    "  (which can otherwise mask a bad transform, or make it hard to tell how much of the\n"
+    "  final result came from the transform versus the solver correcting for it).\n\n"
     "Output is always written in the current working directory, as merged.posegraph/\n"
     "  .data (the fused graph) and merged.png/.yaml (its occupancy grid).\n";
 }
@@ -342,6 +462,7 @@ int main(int argc, char ** argv)
 
   std::string base_map_stem;
   std::string updater_map_stem;
+  std::string node_arg;
   bool display_graph = false;
 
   for (int i = 1; i < argc; ++i) {
@@ -351,6 +472,8 @@ int main(int argc, char ** argv)
       base_map_stem = argv[++i];
     } else if (arg == "--updater_map" && has_value) {
       updater_map_stem = argv[++i];
+    } else if (arg == "--node" && has_value) {
+      node_arg = argv[++i];
     } else if (arg == "--display-graph") {
       display_graph = true;
     } else if (arg == "-h" || arg == "--help") {
@@ -363,13 +486,13 @@ int main(int argc, char ** argv)
     }
   }
 
-  if (base_map_stem.empty() || updater_map_stem.empty()) {
+  if (base_map_stem.empty() || updater_map_stem.empty() || node_arg.empty()) {
     usage(argv[0]);
     return 2;
   }
 
   std::cout << "\nDone: parse command-line arguments (base_map=" << base_map_stem
-            << ", updater_map=" << updater_map_stem << ")" << std::endl;
+            << ", updater_map=" << updater_map_stem << ", node=" << node_arg << ")" << std::endl;
 
   /// Load base_map and updater_map
 
@@ -410,6 +533,35 @@ int main(int argc, char ** argv)
             << " new laser(s) from updater_map" << std::endl;
 
   std::cout << "\nDone: register lasers" << std::endl;
+
+  /// Transform updater_map
+
+  std::cout << "\n\n---\n\nStarting: transform updater_map" << std::endl;
+
+  double node_x = 0.0, node_y = 0.0, node_theta = 0.0;
+  std::string node_err;
+  if (!readNodeTransform(base_map_stem, node_arg, node_x, node_y, node_theta, node_err)) {
+    std::cerr << "error: " << node_err << "\n";
+    finish(1);
+  }
+  std::cout << "  node '" << node_arg << "' ros_pose: (" << node_x << ", " << node_y << ", "
+            << node_theta << ")" << std::endl;
+
+  // Must run after "Register lasers": transformScan() marks each scan dirty and refreshes its
+  // point-reading cache, which resolves the scan's laser via GetLaserRangeFinder() (a global
+  // SensorManager lookup by name) - that throws karto::Exception if the laser hasn't been
+  // registered yet.
+  karto::Pose2 node_pose(node_x, node_y, node_theta);
+  karto::Transform node_transform(node_pose);
+  for (const auto & by_sensor : updater_mapper->GetGraph()->GetVertices()) {
+    for (const auto & entry : by_sensor.second) {
+      if (entry.second != nullptr && entry.second->GetObject() != nullptr) {
+        transformScan(entry.second->GetObject(), node_transform);
+      }
+    }
+  }
+
+  std::cout << "\nDone: transform updater_map" << std::endl;
 
   /// Count nodes in each input graph
 
