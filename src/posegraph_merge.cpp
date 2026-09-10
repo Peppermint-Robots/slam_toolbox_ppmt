@@ -437,6 +437,8 @@ int main(int argc, char ** argv)
 
   /// Create the fused pose graph
 
+  // TODO (AdityaPatil): Currently both the graphs can be modified, we ideally should constrain the base posegraph
+
   std::cout << "\n\n---\n\nStarting: create the fused pose graph" << std::endl;
 
   // Neither base_map nor updater_map is mutated: base_mapper/updater_mapper stay exactly as
