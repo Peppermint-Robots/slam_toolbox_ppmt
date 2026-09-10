@@ -1,12 +1,12 @@
-// Offline merge of two serialized slam_toolbox pose-graphs.
+// Offline merge of two serialized slam_toolbox pose-graphs: base_map and updater_map.
 //
-// Loads posegraph1 and posegraph2 - both assumed to already be expressed in the same coordinate
+// Loads base_map and updater_map - both assumed to already be expressed in the same coordinate
 // frame, no alignment step performed - then replays both graphs' scans, in turn, through a
-// brand-new third Mapper, `fused_mapper`. Neither posegraph1's nor posegraph2's own loaded
+// brand-new third Mapper, `fused_mapper`. Neither base_map's nor updater_map's own loaded
 // Mapper is ever mutated or saved; fused_mapper is what gets written, in the current working
-// directory, as merged(.posegraph/.data/.pgm/.yaml/_graph.png).
+// directory, as merged(.posegraph/.data/.png/.yaml/_graph.png).
 //
-// Both graphs are treated identically: posegraph1's scans are replayed first, then posegraph2's,
+// Both graphs are treated identically: base_map's scans are replayed first, then updater_map's,
 // each through fused_mapper's own Mapper::Process()/ProcessAgainstNodesNearBy(), backed by a
 // real CeresSolver - exactly as DecentralizedMultiRobotSlamToolbox::addExternalScan() does for
 // live multi-robot merging (src/slam_toolbox_decentralized_multirobot.cpp on the ros2 branch).
@@ -22,8 +22,8 @@
 //
 // This is an offline CLI tool: it needs a bare, unspun rclcpp::Node only to Configure() the
 // Ceres solver (CeresSolver::Configure reads a handful of ROS parameters); nothing here ever
-// spins. Like this fork's other offline pose-graph tools, every Mapper/Dataset (posegraph1's,
-// posegraph2's, and fused_mapper/fused_dataset) is heap-allocated and deliberately never freed -
+// spins. Like this fork's other offline pose-graph tools, every Mapper/Dataset (base_map's,
+// updater_map's, and fused_mapper/fused_dataset) is heap-allocated and deliberately never freed -
 // see finish() for why.
 
 #include <algorithm>
@@ -52,7 +52,7 @@ namespace
  *
  * karto's Mapper/Dataset teardown is a path slam_toolbox itself never exercises - it keeps both
  * alive for the lifetime of the process - and this fork's own offline tools have observed it
- * abort with "stack smashing detected" on exit, after all real work had already completed. A
+ * abort with "stack smashing detected", after all real work had already completed. A
  * one-shot batch tool gains nothing from that teardown: the OS reclaims the memory either way,
  * and skipping it means a successful run cannot be turned into a failed exit code by a
  * destructor. _Exit does not flush, so flush first.
@@ -67,12 +67,12 @@ namespace
 
 struct Stats
 {
-  size_t scans_from_graph1 = 0;
-  size_t scans_from_graph2 = 0;
-  size_t graph1_merged = 0;
-  size_t graph1_dropped = 0;
-  size_t graph2_merged = 0;
-  size_t graph2_dropped = 0;
+  size_t scans_from_base_map = 0;
+  size_t scans_from_updater_map = 0;
+  size_t base_map_merged = 0;
+  size_t base_map_dropped = 0;
+  size_t updater_map_merged = 0;
+  size_t updater_map_dropped = 0;
 
   // Local scan-matcher confidence per merged scan, from both graphs (translational covariance
   // trace, i.e. cov(0,0)+cov(1,1) - smaller is a tighter/more confident match) and how far
@@ -81,17 +81,17 @@ struct Stats
   double cov_trace_max = 0.0;
   double cov_trace_sum = 0.0;
 
-  size_t graph1_scans_shifted = 0;
-  double graph1_shift_max = 0.0;
-  double graph1_shift_sum = 0.0;
+  size_t base_map_scans_shifted = 0;
+  double base_map_shift_max = 0.0;
+  double base_map_shift_sum = 0.0;
 
-  double graph2_shift_max = 0.0;
-  double graph2_shift_sum = 0.0;
+  double updater_map_shift_max = 0.0;
+  double updater_map_shift_sum = 0.0;
 };
 
-/** Write <stem>.pgm + <stem>.yaml, in the classification convention this fork's other offline
+/** Write <stem>.png + <stem>.yaml, in the classification convention this fork's other offline
  * pose-graph tools already use: free=254, occupied=0, unknown=205, negate=0, default thresholds.
- * Karto's OccupancyGrid stores row 0 at the WORLD-MINIMUM y, but a PGM/cv::Mat row 0 is the TOP
+ * Karto's OccupancyGrid stores row 0 at the WORLD-MINIMUM y, but a PNG/cv::Mat row 0 is the TOP
  * of the image (world-maximum y), so row order is flipped on the way out.
  */
 bool saveMapImage(
@@ -124,19 +124,19 @@ bool saveMapImage(
     }
   }
 
-  const std::string pgm_path = stem + ".pgm";
+  const std::string png_path = stem + ".png";
   const std::string yaml_path = stem + ".yaml";
-  if (!cv::imwrite(pgm_path, image)) {
-    err = "failed to write '" + pgm_path + "'";
+  if (!cv::imwrite(png_path, image)) {
+    err = "failed to write '" + png_path + "'";
     return false;
   }
 
-  const size_t slash = pgm_path.find_last_of('/');
-  const std::string pgm_name = slash == std::string::npos ? pgm_path : pgm_path.substr(slash + 1);
+  const size_t slash = png_path.find_last_of('/');
+  const std::string png_name = slash == std::string::npos ? png_path : png_path.substr(slash + 1);
 
   YAML::Emitter yaml;
   yaml << YAML::BeginMap;
-  yaml << YAML::Key << "image" << YAML::Value << pgm_name;
+  yaml << YAML::Key << "image" << YAML::Value << png_name;
   yaml << YAML::Key << "resolution" << YAML::Value << resolution;
   yaml << YAML::Key << "origin" << YAML::Value << YAML::Flow <<
     std::vector<double>{offset.GetX(), offset.GetY(), 0.0};
@@ -156,7 +156,7 @@ bool saveMapImage(
 
 /** Draw the fused pose graph on top of its own occupancy grid: every vertex and edge colored by
  * a JET gradient (blue = earliest, red = latest) keyed on the scan's UniqueId in fused_mapper -
- * i.e. the order it was replayed in, not which of posegraph1/posegraph2 it came from.
+ * i.e. the order it was replayed in, not which of base_map/updater_map it came from.
  * fused_mapper is visualized as a single graph, not as two merged sources; an edge's color is
  * its two endpoints' midpoint id. Each vertex is labeled with its own UniqueId, and each edge
  * with "sourceId-targetId", so a specific node/link can be picked out by eye. Reuses the exact
@@ -200,7 +200,7 @@ bool saveGraphOverlay(karto::Mapper * mapper, double resolution, const std::stri
     };
 
   // Order gradient: fused_mapper's own UniqueId is assigned sequentially by
-  // MapperSensorManager::AddScan as each scan is replayed in (posegraph1's, then posegraph2's) -
+  // MapperSensorManager::AddScan as each scan is replayed in (base_map's, then updater_map's) -
   // so it's exactly "insertion order into the fused graph". Map that to a 256-entry JET lookup
   // table (blue = earliest, red = latest) computed once, rather than calling applyColorMap per
   // pixel/shape.
@@ -274,8 +274,8 @@ bool saveGraphOverlay(karto::Mapper * mapper, double resolution, const std::stri
 /** Register every laser in a Dataset with the global SensorManager (LocalizedRangeScan resolves
  * its laser by name lookup through it). Names already present are skipped rather than
  * re-registered: both graphs almost certainly share the same physical sensor name, and
- * re-registering under override would silently repoint posegraph1's own already-loaded scans at
- * posegraph2's copy of that laser's config.
+ * re-registering under override would silently repoint base_map's own already-loaded scans at
+ * updater_map's copy of that laser's config.
  */
 size_t registerLasers(karto::Dataset * dataset, std::set<std::string> & registered_names)
 {
@@ -307,15 +307,15 @@ size_t registerLasers(karto::Dataset * dataset, std::set<std::string> & register
  * .cpp) - the same mechanism that feeds a peer robot's scans into the host's own live Mapper.
  *
  * `fused`'s MapperSensorManager assigns each scan a fresh StateId/UniqueId from its own counters
- * as a side effect of Process()/ProcessAgainstNodesNearBy(), so calling this once for posegraph1
- * and once for posegraph2 can never collide, regardless of either source's original ids. Process
+ * as a side effect of Process()/ProcessAgainstNodesNearBy(), so calling this once for base_map
+ * and once for updater_map can never collide, regardless of either source's original ids. Process
  * ()/ProcessAgainstNodesNearBy() only touch `fused`'s own graph/sensor-manager structures, never
  * its Dataset, so every accepted scan is added to `fused_dataset` here by hand. `accepted_scans`
  * records every scan this call actually merged in (used later to tell the two sources apart for
  * the shift diagnostics); `pre_correct_pose` records each accepted scan's corrected pose right
  * after its local match, before the caller's later CorrectPoses() call, so the caller can report
  * how far the global solve then moved it. `merged_count`/`dropped_count` are the caller's
- * per-source counters to update (e.g. &stats.graph1_merged, &stats.graph1_dropped).
+ * per-source counters to update (e.g. &stats.base_map_merged, &stats.base_map_dropped).
  */
 void replayGraph(
   karto::Mapper * source, karto::Mapper * fused, karto::Dataset * fused_dataset, Stats & stats,
@@ -360,18 +360,18 @@ void replayGraph(
 void usage(const char * argv0)
 {
   std::cerr <<
-    "Merge posegraph1 and posegraph2 into a fused pose graph.\n\n"
+    "Merge base_map and updater_map into a fused pose graph.\n\n"
     "Usage:\n  " << argv0 <<
-    " --in1 <stem> --in2 <stem>\n\n"
+    " --base_map <stem> --updater_map <stem>\n\n"
     "Stems carry no extension: <stem>.posegraph and <stem>.data are both read.\n"
-    "posegraph1 and posegraph2 are assumed to already be expressed in the same\n"
+    "base_map and updater_map are assumed to already be expressed in the same\n"
     "  coordinate frame - this tool performs no alignment.\n"
-    "posegraph1's scans are replayed into the fused graph first, then posegraph2's -\n"
+    "base_map's scans are replayed into the fused graph first, then updater_map's -\n"
     "  both through the fused graph's own scan matcher/solver, so overlapping content\n"
     "  reconciles via loop closure instead of being drawn twice, and both graphs get an\n"
     "  equal chance to link into whatever is already there.\n\n"
     "Output is always written in the current working directory, as merged.posegraph/\n"
-    "  .data (the fused graph), merged.pgm/.yaml (its occupancy grid), and\n"
+    "  .data (the fused graph), merged.png/.yaml (its occupancy grid), and\n"
     "  merged_graph.png (its vertices/edges overlaid on that grid).\n";
 }
 
@@ -379,16 +379,16 @@ void usage(const char * argv0)
 
 int main(int argc, char ** argv)
 {
-  std::string in1_stem;
-  std::string in2_stem;
+  std::string base_map_stem;
+  std::string updater_map_stem;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const bool has_value = (i + 1) < argc;
-    if (arg == "--in1" && has_value) {
-      in1_stem = argv[++i];
-    } else if (arg == "--in2" && has_value) {
-      in2_stem = argv[++i];
+    if (arg == "--base_map" && has_value) {
+      base_map_stem = argv[++i];
+    } else if (arg == "--updater_map" && has_value) {
+      updater_map_stem = argv[++i];
     } else if (arg == "-h" || arg == "--help") {
       usage(argv[0]);
       return 0;
@@ -399,59 +399,60 @@ int main(int argc, char ** argv)
     }
   }
 
-  if (in1_stem.empty() || in2_stem.empty()) {
+  if (base_map_stem.empty() || updater_map_stem.empty()) {
     usage(argv[0]);
     return 2;
   }
 
   // Deliberately leaked - nothing may run ~Mapper / ~Dataset / UnregisterSensor. See finish().
-  auto * mapper1 = new karto::Mapper();
-  auto * dataset1 = new karto::Dataset();
-  auto * mapper2 = new karto::Mapper();
-  auto * dataset2 = new karto::Dataset();
+  auto * base_mapper = new karto::Mapper();
+  auto * base_dataset = new karto::Dataset();
+  auto * updater_mapper = new karto::Mapper();
+  auto * updater_dataset = new karto::Dataset();
 
-  std::cout << "reading " << in1_stem << ".posegraph / .data ..." << std::endl;
-  std::cout << "reading " << in2_stem << ".posegraph / .data ..." << std::endl;
+  std::cout << "reading " << base_map_stem << ".posegraph / .data ..." << std::endl;
+  std::cout << "reading " << updater_map_stem << ".posegraph / .data ..." << std::endl;
   try {
-    mapper1->LoadFromFile(in1_stem + ".posegraph");
-    dataset1->LoadFromFile(in1_stem + ".data");
-    mapper2->LoadFromFile(in2_stem + ".posegraph");
-    dataset2->LoadFromFile(in2_stem + ".data");
+    base_mapper->LoadFromFile(base_map_stem + ".posegraph");
+    base_dataset->LoadFromFile(base_map_stem + ".data");
+    updater_mapper->LoadFromFile(updater_map_stem + ".posegraph");
+    updater_dataset->LoadFromFile(updater_map_stem + ".data");
   } catch (const std::exception & e) {
     std::cerr << "error: failed to read pose graphs: " << e.what() << "\n";
     finish(1);
   }
 
   std::set<std::string> registered_names;
-  const size_t lasers1 = registerLasers(dataset1, registered_names);
-  const size_t lasers2 = registerLasers(dataset2, registered_names);
-  if (lasers1 == 0) {
-    std::cerr << "error: no LaserRangeFinder in " << in1_stem << ".data\n";
+  const size_t base_map_lasers = registerLasers(base_dataset, registered_names);
+  const size_t updater_map_lasers = registerLasers(updater_dataset, registered_names);
+  if (base_map_lasers == 0) {
+    std::cerr << "error: no LaserRangeFinder in " << base_map_stem << ".data\n";
     finish(1);
   }
-  std::cout << "  " << lasers1 << " laser(s) from posegraph1, " << lasers2
-            << " new laser(s) from posegraph2" << std::endl;
+  std::cout << "  " << base_map_lasers << " laser(s) from base_map, " << updater_map_lasers
+            << " new laser(s) from updater_map" << std::endl;
 
   Stats stats;
-  for (const auto & by_sensor : mapper1->GetGraph()->GetVertices()) {
+  for (const auto & by_sensor : base_mapper->GetGraph()->GetVertices()) {
     for (const auto & entry : by_sensor.second) {
       if (entry.second != nullptr && entry.second->GetObject() != nullptr) {
-        ++stats.scans_from_graph1;
+        ++stats.scans_from_base_map;
       }
     }
   }
-  for (const auto & by_sensor : mapper2->GetGraph()->GetVertices()) {
+  for (const auto & by_sensor : updater_mapper->GetGraph()->GetVertices()) {
     for (const auto & entry : by_sensor.second) {
       if (entry.second != nullptr && entry.second->GetObject() != nullptr) {
-        ++stats.scans_from_graph2;
+        ++stats.scans_from_updater_map;
       }
     }
   }
-  std::cout << "posegraph1: " << stats.scans_from_graph1 << " scans, posegraph2: "
-            << stats.scans_from_graph2 << " scans" << std::endl;
+  std::cout << "base_map: " << stats.scans_from_base_map << " scans, updater_map: "
+            << stats.scans_from_updater_map << " scans" << std::endl;
 
-  // Neither posegraph1 nor posegraph2 is mutated: mapper1/mapper2 stay exactly as loaded.
-  // Everything from both graphs is combined into this fresh, independent third Mapper instead.
+  // Neither base_map nor updater_map is mutated: base_mapper/updater_mapper stay exactly as
+  // loaded. Everything from both graphs is combined into this fresh, independent third Mapper
+  // instead.
   auto * fused_mapper = new karto::Mapper();
   auto * fused_dataset = new karto::Dataset();
 
@@ -460,13 +461,13 @@ int main(int argc, char ** argv)
   // sensor-registration loop right below needs GetMapperSensorManager() to already be non-null,
   // so call it explicitly here first, exactly as Process() would (same range threshold, taken
   // from the primary registered laser).
-  auto * primary_laser = dynamic_cast<karto::LaserRangeFinder *>(dataset1->GetLasers()[0]);
+  auto * primary_laser = dynamic_cast<karto::LaserRangeFinder *>(base_dataset->GetLasers()[0]);
   fused_mapper->Initialize(primary_laser->GetRangeThreshold());
 
-  // Register every sensor name from BOTH graphs before either is replayed - posegraph2 may use a
-  // name posegraph1 never did, and it has to be known before its first Process() call.
+  // Register every sensor name from BOTH graphs before either is replayed - updater_map may use
+  // a name base_map never did, and it has to be known before its first Process() call.
   std::set<std::string> sensor_names_seen;
-  for (auto * source : {mapper1, mapper2}) {
+  for (auto * source : {base_mapper, updater_mapper}) {
     for (const auto & by_sensor : source->GetGraph()->GetVertices()) {
       for (const auto & entry : by_sensor.second) {
         if (entry.second == nullptr || entry.second->GetObject() == nullptr) {
@@ -536,8 +537,8 @@ int main(int argc, char ** argv)
             << " min_response_fine=" << fused_mapper->getParamLoopMatchMinimumResponseFine()
             << std::endl;
 
-  std::set<karto::LocalizedRangeScan *> graph1_scan_set;
-  std::set<karto::LocalizedRangeScan *> graph2_scan_set;
+  std::set<karto::LocalizedRangeScan *> base_map_scan_set;
+  std::set<karto::LocalizedRangeScan *> updater_map_scan_set;
   std::map<int, karto::Pose2> pre_correct_pose;
 
   rclcpp::init(0, nullptr);
@@ -570,15 +571,15 @@ int main(int argc, char ** argv)
     // automatically - no separate seeding pass needed, unlike when only one side was spliced in.
     fused_mapper->SetScanSolver(solver.get());
 
-    // Both graphs replayed the same way, in turn: posegraph1 first, then posegraph2. Neither is
+    // Both graphs replayed the same way, in turn: base_map first, then updater_map. Neither is
     // trusted as a fixed "base" - both get scan-matched and both get an equal chance to
     // loop-close against whatever the other call already put into fused_mapper.
     replayGraph(
-      mapper1, fused_mapper, fused_dataset, stats, stats.graph1_merged, stats.graph1_dropped,
-      graph1_scan_set, pre_correct_pose);
+      base_mapper, fused_mapper, fused_dataset, stats, stats.base_map_merged,
+      stats.base_map_dropped, base_map_scan_set, pre_correct_pose);
     replayGraph(
-      mapper2, fused_mapper, fused_dataset, stats, stats.graph2_merged, stats.graph2_dropped,
-      graph2_scan_set, pre_correct_pose);
+      updater_mapper, fused_mapper, fused_dataset, stats, stats.updater_map_merged,
+      stats.updater_map_dropped, updater_map_scan_set, pre_correct_pose);
 
     // Process()/ProcessAgainstNodesNearBy() only place each scan against its *local*
     // neighbourhood (the sequential/loop scan matchers); the global Ceres solve that
@@ -599,15 +600,15 @@ int main(int argc, char ** argv)
       const double dx = scan->GetCorrectedPose().GetX() - it->second.GetX();
       const double dy = scan->GetCorrectedPose().GetY() - it->second.GetY();
       const double shift = std::sqrt(dx * dx + dy * dy);
-      if (graph2_scan_set.count(scan) != 0) {
-        stats.graph2_shift_max = std::max(stats.graph2_shift_max, shift);
-        stats.graph2_shift_sum += shift;
+      if (updater_map_scan_set.count(scan) != 0) {
+        stats.updater_map_shift_max = std::max(stats.updater_map_shift_max, shift);
+        stats.updater_map_shift_sum += shift;
       } else {
         if (shift > 1e-6) {
-          ++stats.graph1_scans_shifted;
+          ++stats.base_map_scans_shifted;
         }
-        stats.graph1_shift_max = std::max(stats.graph1_shift_max, shift);
-        stats.graph1_shift_sum += shift;
+        stats.base_map_shift_max = std::max(stats.base_map_shift_max, shift);
+        stats.base_map_shift_sum += shift;
       }
     }
 
@@ -616,32 +617,32 @@ int main(int argc, char ** argv)
   }
 
   const karto::LocalizedRangeScanVector final_scans = fused_mapper->GetAllProcessedScans();
-  const size_t total_merged = stats.graph1_merged + stats.graph2_merged;
+  const size_t total_merged = stats.base_map_merged + stats.updater_map_merged;
 
   std::cout << "\nresult\n"
-            << "  posegraph1 scans merged/dropped : " << stats.graph1_merged << " / "
-            << stats.graph1_dropped << "\n"
-            << "  posegraph2 scans merged/dropped : " << stats.graph2_merged << " / "
-            << stats.graph2_dropped << std::endl;
+            << "  base_map scans merged/dropped    : " << stats.base_map_merged << " / "
+            << stats.base_map_dropped << "\n"
+            << "  updater_map scans merged/dropped : " << stats.updater_map_merged << " / "
+            << stats.updater_map_dropped << std::endl;
 
   if (total_merged > 0) {
     const double cov_trace_mean = stats.cov_trace_sum / static_cast<double>(total_merged);
-    const double graph2_shift_mean = stats.graph2_merged > 0 ?
-      stats.graph2_shift_sum / static_cast<double>(stats.graph2_merged) : 0.0;
-    const double graph1_shift_mean = stats.graph1_merged > 0 ?
-      stats.graph1_shift_sum / static_cast<double>(stats.graph1_merged) : 0.0;
+    const double updater_map_shift_mean = stats.updater_map_merged > 0 ?
+      stats.updater_map_shift_sum / static_cast<double>(stats.updater_map_merged) : 0.0;
+    const double base_map_shift_mean = stats.base_map_merged > 0 ?
+      stats.base_map_shift_sum / static_cast<double>(stats.base_map_merged) : 0.0;
     std::cout << "\nmerge diagnostics (local-match confidence, then how far the global solve\n"
                  "moved things from that local placement - large numbers mean the matches\n"
                  "were poor and the graphs are still misaligned)\n"
-              << "  local match covariance trace (x+y variance, m^2), min/mean/max : "
+              << "  local match covariance trace (x+y variance, m^2), min/mean/max   : "
               << stats.cov_trace_min << " / " << cov_trace_mean << " / "
               << stats.cov_trace_max << "\n"
-              << "  posegraph2 scans shifted by CorrectPoses(), mean/max (m)       : "
-              << graph2_shift_mean << " / " << stats.graph2_shift_max << "\n"
-              << "  posegraph1 scans moved at all                                  : "
-              << stats.graph1_scans_shifted << "\n"
-              << "  posegraph1 scans shifted by CorrectPoses(), mean/max (m)       : "
-              << graph1_shift_mean << " / " << stats.graph1_shift_max << std::endl;
+              << "  updater_map scans shifted by CorrectPoses(), mean/max (m)        : "
+              << updater_map_shift_mean << " / " << stats.updater_map_shift_max << "\n"
+              << "  base_map scans moved at all                                     : "
+              << stats.base_map_scans_shifted << "\n"
+              << "  base_map scans shifted by CorrectPoses(), mean/max (m)           : "
+              << base_map_shift_mean << " / " << stats.base_map_shift_max << std::endl;
   }
 
   const std::string out_stem = "merged";
@@ -660,7 +661,7 @@ int main(int argc, char ** argv)
     std::cerr << "error: failed to write merged map: " << err << "\n";
     finish(1);
   }
-  std::cout << "wrote " << out_stem << ".pgm / .yaml" << std::endl;
+  std::cout << "wrote " << out_stem << ".png / .yaml" << std::endl;
 
   if (!saveGraphOverlay(fused_mapper, 0.05, out_stem, err)) {
     std::cerr << "error: failed to write graph overlay: " << err << "\n";
