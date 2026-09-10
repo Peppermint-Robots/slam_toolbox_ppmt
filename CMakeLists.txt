@@ -32,6 +32,7 @@ find_package(rviz_rendering REQUIRED)
 find_package(interactive_markers REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets Test Concurrent)
 find_package(rclcpp_components REQUIRED)
+find_package(nav2_map_server REQUIRED)
 
 #karto_sdk lib
 set(BUILD_SHARED_LIBS ON)
@@ -179,6 +180,14 @@ target_link_libraries(map_and_localization_slam_toolbox_node map_and_localizatio
 add_executable(merge_maps_kinematic src/merge_maps_kinematic.cpp)
 target_link_libraries(merge_maps_kinematic kartoSlamToolbox toolbox_common)
 
+#### Offline pose-graph rasterizer
+# Renders a serialized pose graph to an image + yaml at an arbitrary resolution,
+# without publishing on /map. Lets the live map stay coarse while the saved map
+# is rendered fine, once, at save time.
+add_executable(map_rasterizer src/map_rasterizer.cpp)
+ament_target_dependencies(map_rasterizer ${dependencies} nav2_map_server)
+target_link_libraries(map_rasterizer kartoSlamToolbox toolbox_common)
+
 #### testing
 #if(BUILD_TESTING)
 #  find_package(ament_cmake_gtest REQUIRED)
@@ -201,6 +210,7 @@ install(TARGETS async_slam_toolbox_node
                 localization_slam_toolbox_node
                 map_and_localization_slam_toolbox_node
                 merge_maps_kinematic
+                map_rasterizer
                 ${libraries}
                 kartoSlamToolbox
   ARCHIVE DESTINATION lib
