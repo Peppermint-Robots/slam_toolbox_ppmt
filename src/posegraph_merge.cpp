@@ -176,9 +176,9 @@ bool saveMapImage(
         auto * scan = entry.second->GetObject();
         const cv::Point px = toPixel(scan->GetCorrectedPose());
         cv::circle(image, px, 1, vertex_color, cv::FILLED, cv::LINE_AA);
-        cv::putText(
-          image, std::to_string(scan->GetUniqueId()), px + cv::Point(4, -4),
-          cv::FONT_HERSHEY_SIMPLEX, 0.20, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
+        // cv::putText(
+        //   image, std::to_string(scan->GetUniqueId()), px + cv::Point(4, -4),
+        //   cv::FONT_HERSHEY_SIMPLEX, 0.20, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
       }
     }
   }
