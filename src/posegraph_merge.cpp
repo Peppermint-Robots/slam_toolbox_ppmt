@@ -97,13 +97,17 @@ struct Stats
  *
  * If `display_graph` is set, the fused pose graph is drawn on top of that same image before it's
  * written: every vertex as a small filled circle (labeled with its UniqueId) in one uniform
- * color, every edge as a line in one different uniform color - no per-node/per-source
- * distinction, this is "is the graph connected and roughly where do its nodes sit," not an
- * ordering/provenance visualization.
+ * color. Edges get one of two uniform colors: green for an edge whose two endpoints came from
+ * the same source graph, red for an edge that connects a base_map node to an updater_map node -
+ * i.e. an edge that actually ties the two graphs together, found during replay (either a genuine
+ * TryCloseLoop() loop closure, or the one ordinary "link to previous scan" edge AddEdges()
+ * creates for updater_map's very first replayed scan - see replayGraph's docs). `updater_map_scans`
+ * is the membership set used for that classification; pass an empty set to draw every edge green.
  */
 bool saveMapImage(
-  karto::Mapper * mapper, bool display_graph, double resolution, const std::string & stem,
-  std::string & err)
+  karto::Mapper * mapper, bool display_graph,
+  const std::set<karto::LocalizedRangeScan *> & updater_map_scans, double resolution,
+  const std::string & stem, std::string & err)
 {
   const karto::LocalizedRangeScanVector scans = mapper->GetAllProcessedScans();
   std::unique_ptr<karto::OccupancyGrid> occ_grid(
@@ -144,8 +148,9 @@ bool saveMapImage(
         return cv::Point(gx, height - 1 - gy);
       };
 
-    const cv::Scalar edge_color(0, 200, 0);      // green (BGR), uniform for every edge
-    const cv::Scalar vertex_color(255, 128, 0);  // blue-ish (BGR), uniform for every vertex
+    const cv::Scalar intra_edge_color(0, 200, 0);  // green (BGR) - both endpoints, same source
+    const cv::Scalar cross_edge_color(0, 0, 255);  // red - ties base_map to updater_map
+    const cv::Scalar vertex_color(255, 128, 0);    // blue-ish (BGR), uniform for every vertex
 
     for (auto * edge : mapper->GetGraph()->GetEdges()) {
       if (edge == nullptr || edge->GetSource() == nullptr || edge->GetTarget() == nullptr) {
@@ -156,9 +161,11 @@ bool saveMapImage(
       if (source == nullptr || target == nullptr) {
         continue;
       }
+      const bool crosses =
+        (updater_map_scans.count(source) != 0) != (updater_map_scans.count(target) != 0);
       cv::line(
         image, toPixel(source->GetCorrectedPose()), toPixel(target->GetCorrectedPose()),
-        edge_color, 1, cv::LINE_AA);
+        crosses ? cross_edge_color : intra_edge_color, crosses ? 1 : 1, cv::LINE_AA);
     }
 
     for (const auto & by_sensor : mapper->GetGraph()->GetVertices()) {
@@ -251,12 +258,18 @@ size_t registerLasers(karto::Dataset * dataset, std::set<std::string> & register
  * after its local match, before the caller's later CorrectPoses() call, so the caller can report
  * how far the global solve then moved it. `merged_count`/`dropped_count` are the caller's
  * per-source counters to update (e.g. &stats.base_map_merged, &stats.base_map_dropped).
+ * `first_accepted_uid`, if given, receives the fused-graph UniqueId of the first scan this call
+ * successfully processed - the caller can use it to recognise the one edge
+ * MapperGraph::AddEdges() creates as an ordinary "link to previous scan" for that first scan
+ * (Mapper.cpp:1441-1449, since it's the first call into ProcessAgainstNodesNearBy() and the only
+ * point where "previous StateId" crosses from one source's id range into the other's) - that one
+ * edge is not a TryCloseLoop() loop closure even though it connects the two sources.
  */
 void replayGraph(
   karto::Mapper * source, karto::Mapper * fused, karto::Dataset * fused_dataset, Stats & stats,
   size_t & merged_count, size_t & dropped_count,
   std::set<karto::LocalizedRangeScan *> & accepted_scans,
-  std::map<int, karto::Pose2> & pre_correct_pose)
+  std::map<int, karto::Pose2> & pre_correct_pose, int * first_accepted_uid = nullptr)
 {
   std::vector<karto::LocalizedRangeScan *> scans;
   for (const auto & by_sensor : source->GetGraph()->GetVertices()) {
@@ -285,6 +298,9 @@ void replayGraph(
       pre_correct_pose[scan->GetUniqueId()] = scan->GetCorrectedPose();
       fused_dataset->Add(scan);
       accepted_scans.insert(scan);
+      if (first_accepted_uid != nullptr && *first_accepted_uid == -1) {
+        *first_accepted_uid = scan->GetUniqueId();
+      }
     } else {
       ++dropped_count;
       delete scan;
@@ -306,8 +322,11 @@ void usage(const char * argv0)
     "  reconciles via loop closure instead of being drawn twice, and both graphs get an\n"
     "  equal chance to link into whatever is already there.\n\n"
     "--display-graph draws the fused graph's vertices/edges on top of the occupancy\n"
-    "  grid (one uniform color for every vertex, a different uniform color for every\n"
-    "  edge) before writing it out. Without it, the image is the plain occupancy grid.\n\n"
+    "  grid before writing it out: every vertex in one uniform color, an edge within one\n"
+    "  source graph in green, and an edge tying base_map to updater_map (a loop closure,\n"
+    "  or the one ordinary link created for updater_map's first replayed scan) in red.\n"
+    "  Cross-graph edges are also logged to stdout. Without this flag, the image is the\n"
+    "  plain occupancy grid.\n\n"
     "Output is always written in the current working directory, as merged.posegraph/\n"
     "  .data (the fused graph) and merged.png/.yaml (its occupancy grid).\n";
 }
@@ -529,6 +548,7 @@ int main(int argc, char ** argv)
   std::set<karto::LocalizedRangeScan *> base_map_scan_set;
   std::set<karto::LocalizedRangeScan *> updater_map_scan_set;
   std::map<int, karto::Pose2> pre_correct_pose;
+  int updater_map_first_uid = -1;
 
   rclcpp::init(0, nullptr);
   {
@@ -568,7 +588,8 @@ int main(int argc, char ** argv)
       stats.base_map_dropped, base_map_scan_set, pre_correct_pose);
     replayGraph(
       updater_mapper, fused_mapper, fused_dataset, stats, stats.updater_map_merged,
-      stats.updater_map_dropped, updater_map_scan_set, pre_correct_pose);
+      stats.updater_map_dropped, updater_map_scan_set, pre_correct_pose,
+      &updater_map_first_uid);
 
     // Process()/ProcessAgainstNodesNearBy() only place each scan against its *local*
     // neighbourhood (the sequential/loop scan matchers); the global Ceres solve that
@@ -608,6 +629,51 @@ int main(int argc, char ** argv)
   std::cout << "\nDone: replay both graphs through the fused graph's own scan matcher/solver"
             << std::endl;
 
+  /// Log edges that tie base_map to updater_map
+
+  if(display_graph)
+  {
+    std::cout << "\n\n---\n\nStarting: log edges that tie base_map to updater_map" << std::endl;
+    
+    // An edge with one endpoint in each source is either a genuine TryCloseLoop() loop closure or
+    // (exactly once, for updater_map's very first replayed scan) the ordinary "link to previous
+    // scan" edge AddEdges() creates because that scan's fused-graph StateId happens to follow
+    // directly after base_map's last one - see replayGraph's docs. There's no per-edge "how was
+    // this created" flag in karto to tell the two apart directly, so the one known non-loop-closure
+    // edge is identified by checking whether it touches updater_map_first_uid; every other
+    // cross-source edge is a real loop closure.
+    size_t cross_edge_count = 0;
+    for (auto * edge : fused_mapper->GetGraph()->GetEdges()) {
+      if (edge == nullptr || edge->GetSource() == nullptr || edge->GetTarget() == nullptr) {
+        continue;
+      }
+      auto * source = edge->GetSource()->GetObject();
+      auto * target = edge->GetTarget()->GetObject();
+      if (source == nullptr || target == nullptr) {
+        continue;
+      }
+      const bool source_is_updater = updater_map_scan_set.count(source) != 0;
+      const bool target_is_updater = updater_map_scan_set.count(target) != 0;
+      if (source_is_updater == target_is_updater) {
+        continue;  // both endpoints from the same source - not a cross-graph edge
+      }
+      ++cross_edge_count;
+      const int base_uid = source_is_updater ? target->GetUniqueId() : source->GetUniqueId();
+      const int updater_uid = source_is_updater ? source->GetUniqueId() : target->GetUniqueId();
+      const bool is_known_seam_edge = updater_uid == updater_map_first_uid;
+      std::cout << "  base_map node " << base_uid << " <-> updater_map node " << updater_uid
+      << (is_known_seam_edge ?
+        " (sequential link - updater_map's first replayed scan, not a loop closure)" :
+        " (loop closure)") << std::endl;
+      }
+      if (cross_edge_count == 0) {
+        std::cout << "  none - base_map and updater_map never linked" << std::endl;
+      }
+      
+      std::cout << "\nDone: log edges that tie base_map to updater_map (" << cross_edge_count
+      << " found)" << std::endl;
+  }
+      
   /// Print merge results
 
   std::cout << "\n\n---\n\nStarting: print merge results" << std::endl;
@@ -663,7 +729,7 @@ int main(int argc, char ** argv)
   std::cout << "\n\n---\n\nStarting: save the 2D merged map" << std::endl;
 
   std::string err;
-  if (!saveMapImage(fused_mapper, display_graph, 0.05, out_stem, err)) {
+  if (!saveMapImage(fused_mapper, display_graph, updater_map_scan_set, 0.05, out_stem, err)) {
     std::cerr << "error: failed to write merged map: " << err << "\n";
     finish(1);
   }
