@@ -89,15 +89,23 @@ struct Stats
   double updater_map_shift_sum = 0.0;
 };
 
-/** Write <stem>.png + <stem>.yaml, in the classification convention this fork's other offline
- * pose-graph tools already use: free=254, occupied=0, unknown=205, negate=0, default thresholds.
- * Karto's OccupancyGrid stores row 0 at the WORLD-MINIMUM y, but a PNG/cv::Mat row 0 is the TOP
- * of the image (world-maximum y), so row order is flipped on the way out.
+/** Write <stem>.png + <stem>.yaml: the occupancy grid built from every scan in `mapper`, in the
+ * classification convention this fork's other offline pose-graph tools already use: free=254,
+ * occupied=0, unknown=205, negate=0, default thresholds. Karto's OccupancyGrid stores row 0 at
+ * the WORLD-MINIMUM y, but a PNG/cv::Mat row 0 is the TOP of the image (world-maximum y), so row
+ * order is flipped on the way out.
+ *
+ * If `display_graph` is set, the fused pose graph is drawn on top of that same image before it's
+ * written: every vertex as a small filled circle (labeled with its UniqueId) in one uniform
+ * color, every edge as a line in one different uniform color - no per-node/per-source
+ * distinction, this is "is the graph connected and roughly where do its nodes sit," not an
+ * ordering/provenance visualization.
  */
 bool saveMapImage(
-  const karto::LocalizedRangeScanVector & scans, double resolution,
-  const std::string & stem, std::string & err)
+  karto::Mapper * mapper, bool display_graph, double resolution, const std::string & stem,
+  std::string & err)
 {
+  const karto::LocalizedRangeScanVector scans = mapper->GetAllProcessedScans();
   std::unique_ptr<karto::OccupancyGrid> occ_grid(
     karto::OccupancyGrid::CreateFromScans(scans, resolution));
   if (!occ_grid) {
@@ -109,7 +117,7 @@ bool saveMapImage(
   const int height = occ_grid->GetHeight();
   const karto::Vector2<kt_double> offset = occ_grid->GetCoordinateConverter()->GetOffset();
 
-  cv::Mat image(height, width, CV_8UC1, cv::Scalar(205));
+  cv::Mat gray(height, width, CV_8UC1, cv::Scalar(205));
   for (int y = 0; y < height; ++y) {
     const int row = height - 1 - y;
     for (int x = 0; x < width; ++x) {
@@ -120,7 +128,51 @@ bool saveMapImage(
       } else if (value == karto::GridStates_Free) {
         pixel = 254;
       }
-      image.at<uint8_t>(row, x) = pixel;
+      gray.at<uint8_t>(row, x) = pixel;
+    }
+  }
+
+  cv::Mat image;
+  if (!display_graph) {
+    image = gray;
+  } else {
+    cv::cvtColor(gray, image, cv::COLOR_GRAY2BGR);
+
+    auto toPixel = [&](const karto::Pose2 & pose) {
+        const int gx = static_cast<int>(std::lround((pose.GetX() - offset.GetX()) / resolution));
+        const int gy = static_cast<int>(std::lround((pose.GetY() - offset.GetY()) / resolution));
+        return cv::Point(gx, height - 1 - gy);
+      };
+
+    const cv::Scalar edge_color(0, 200, 0);      // green (BGR), uniform for every edge
+    const cv::Scalar vertex_color(255, 128, 0);  // blue-ish (BGR), uniform for every vertex
+
+    for (auto * edge : mapper->GetGraph()->GetEdges()) {
+      if (edge == nullptr || edge->GetSource() == nullptr || edge->GetTarget() == nullptr) {
+        continue;
+      }
+      auto * source = edge->GetSource()->GetObject();
+      auto * target = edge->GetTarget()->GetObject();
+      if (source == nullptr || target == nullptr) {
+        continue;
+      }
+      cv::line(
+        image, toPixel(source->GetCorrectedPose()), toPixel(target->GetCorrectedPose()),
+        edge_color, 1, cv::LINE_AA);
+    }
+
+    for (const auto & by_sensor : mapper->GetGraph()->GetVertices()) {
+      for (const auto & entry : by_sensor.second) {
+        if (entry.second == nullptr || entry.second->GetObject() == nullptr) {
+          continue;
+        }
+        auto * scan = entry.second->GetObject();
+        const cv::Point px = toPixel(scan->GetCorrectedPose());
+        cv::circle(image, px, 1, vertex_color, cv::FILLED, cv::LINE_AA);
+        cv::putText(
+          image, std::to_string(scan->GetUniqueId()), px + cv::Point(4, -4),
+          cv::FONT_HERSHEY_SIMPLEX, 0.20, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
+      }
     }
   }
 
@@ -151,123 +203,6 @@ bool saveMapImage(
     return false;
   }
   out << yaml.c_str() << "\n";
-  return true;
-}
-
-/** Draw the fused pose graph on top of its own occupancy grid: every vertex and edge colored by
- * a JET gradient (blue = earliest, red = latest) keyed on the scan's UniqueId in fused_mapper -
- * i.e. the order it was replayed in, not which of base_map/updater_map it came from.
- * fused_mapper is visualized as a single graph, not as two merged sources; an edge's color is
- * its two endpoints' midpoint id. Each vertex is labeled with its own UniqueId, and each edge
- * with "sourceId-targetId", so a specific node/link can be picked out by eye. Reuses the exact
- * same world-to-pixel convention as saveMapImage so the overlay lines up with it pixel-for-pixel.
- */
-bool saveGraphOverlay(karto::Mapper * mapper, double resolution, const std::string & stem, std::string & err)
-{
-  const karto::LocalizedRangeScanVector all_scans = mapper->GetAllProcessedScans();
-  std::unique_ptr<karto::OccupancyGrid> occ_grid(
-    karto::OccupancyGrid::CreateFromScans(all_scans, resolution));
-  if (!occ_grid) {
-    err = "no scans to build a graph overlay from";
-    return false;
-  }
-
-  const int width = occ_grid->GetWidth();
-  const int height = occ_grid->GetHeight();
-  const karto::Vector2<kt_double> offset = occ_grid->GetCoordinateConverter()->GetOffset();
-
-  cv::Mat gray(height, width, CV_8UC1, cv::Scalar(205));
-  for (int y = 0; y < height; ++y) {
-    const int row = height - 1 - y;
-    for (int x = 0; x < width; ++x) {
-      const kt_int8u value = occ_grid->GetValue(karto::Vector2<kt_int32s>(x, y));
-      uint8_t pixel = 205;
-      if (value == karto::GridStates_Occupied) {
-        pixel = 0;
-      } else if (value == karto::GridStates_Free) {
-        pixel = 254;
-      }
-      gray.at<uint8_t>(row, x) = pixel;
-    }
-  }
-  cv::Mat image;
-  cv::cvtColor(gray, image, cv::COLOR_GRAY2BGR);
-
-  auto toPixel = [&](const karto::Pose2 & pose) {
-      const int gx = static_cast<int>(std::lround((pose.GetX() - offset.GetX()) / resolution));
-      const int gy = static_cast<int>(std::lround((pose.GetY() - offset.GetY()) / resolution));
-      return cv::Point(gx, height - 1 - gy);
-    };
-
-  // Order gradient: fused_mapper's own UniqueId is assigned sequentially by
-  // MapperSensorManager::AddScan as each scan is replayed in (base_map's, then updater_map's) -
-  // so it's exactly "insertion order into the fused graph". Map that to a 256-entry JET lookup
-  // table (blue = earliest, red = latest) computed once, rather than calling applyColorMap per
-  // pixel/shape.
-  int min_uid = std::numeric_limits<int>::max();
-  int max_uid = std::numeric_limits<int>::min();
-  for (auto * scan : all_scans) {
-    min_uid = std::min(min_uid, scan->GetUniqueId());
-    max_uid = std::max(max_uid, scan->GetUniqueId());
-  }
-  const int uid_span = std::max(max_uid - min_uid, 1);
-
-  cv::Mat gray_lut(256, 1, CV_8UC1);
-  for (int i = 0; i < 256; ++i) {
-    gray_lut.at<uint8_t>(i, 0) = static_cast<uint8_t>(i);
-  }
-  cv::Mat colormap;
-  cv::applyColorMap(gray_lut, colormap, cv::COLORMAP_JET);
-  auto colorForUniqueId = [&](int uid) {
-      const double t = static_cast<double>(uid - min_uid) / static_cast<double>(uid_span);
-      const int index = std::clamp(static_cast<int>(std::lround(t * 255.0)), 0, 255);
-      return colormap.at<cv::Vec3b>(index, 0);
-    };
-
-  auto drawLabel = [&](const cv::Point & anchor, const std::string & text) {
-      cv::putText(
-        image, text, anchor + cv::Point(4, -4), cv::FONT_HERSHEY_SIMPLEX, 0.20,
-        cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
-    };
-
-  for (auto * edge : mapper->GetGraph()->GetEdges()) {
-    if (edge == nullptr || edge->GetSource() == nullptr || edge->GetTarget() == nullptr) {
-      continue;
-    }
-    auto * source = edge->GetSource()->GetObject();
-    auto * target = edge->GetTarget()->GetObject();
-    if (source == nullptr || target == nullptr) {
-      continue;
-    }
-    const int mid_uid = (source->GetUniqueId() + target->GetUniqueId()) / 2;
-    const cv::Vec3b color = colorForUniqueId(mid_uid);
-    const cv::Point source_px = toPixel(source->GetCorrectedPose());
-    const cv::Point target_px = toPixel(target->GetCorrectedPose());
-    cv::line(
-      image, source_px, target_px, cv::Scalar(color[0], color[1], color[2]), 1, cv::LINE_AA);
-    // drawLabel(
-    //   (source_px + target_px) / 2,
-    //   std::to_string(source->GetUniqueId()) + "-" + std::to_string(target->GetUniqueId()));
-  }
-
-  for (const auto & by_sensor : mapper->GetGraph()->GetVertices()) {
-    for (const auto & entry : by_sensor.second) {
-      if (entry.second == nullptr || entry.second->GetObject() == nullptr) {
-        continue;
-      }
-      auto * scan = entry.second->GetObject();
-      const cv::Vec3b color = colorForUniqueId(scan->GetUniqueId());
-      const cv::Point px = toPixel(scan->GetCorrectedPose());
-      cv::circle(image, px, 1, cv::Scalar(color[0], color[1], color[2]), cv::FILLED, cv::LINE_AA);
-      drawLabel(px, std::to_string(scan->GetUniqueId()));
-    }
-  }
-
-  const std::string path = stem + "_graph.png";
-  if (!cv::imwrite(path, image)) {
-    err = "failed to write '" + path + "'";
-    return false;
-  }
   return true;
 }
 
@@ -362,7 +297,7 @@ void usage(const char * argv0)
   std::cerr <<
     "Merge base_map and updater_map into a fused pose graph.\n\n"
     "Usage:\n  " << argv0 <<
-    " --base_map <stem> --updater_map <stem>\n\n"
+    " --base_map <stem> --updater_map <stem> [--display-graph]\n\n"
     "Stems carry no extension: <stem>.posegraph and <stem>.data are both read.\n"
     "base_map and updater_map are assumed to already be expressed in the same\n"
     "  coordinate frame - this tool performs no alignment.\n"
@@ -370,9 +305,11 @@ void usage(const char * argv0)
     "  both through the fused graph's own scan matcher/solver, so overlapping content\n"
     "  reconciles via loop closure instead of being drawn twice, and both graphs get an\n"
     "  equal chance to link into whatever is already there.\n\n"
+    "--display-graph draws the fused graph's vertices/edges on top of the occupancy\n"
+    "  grid (one uniform color for every vertex, a different uniform color for every\n"
+    "  edge) before writing it out. Without it, the image is the plain occupancy grid.\n\n"
     "Output is always written in the current working directory, as merged.posegraph/\n"
-    "  .data (the fused graph), merged.png/.yaml (its occupancy grid), and\n"
-    "  merged_graph.png (its vertices/edges overlaid on that grid).\n";
+    "  .data (the fused graph) and merged.png/.yaml (its occupancy grid).\n";
 }
 
 }  // namespace
@@ -386,6 +323,7 @@ int main(int argc, char ** argv)
 
   std::string base_map_stem;
   std::string updater_map_stem;
+  bool display_graph = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -394,6 +332,8 @@ int main(int argc, char ** argv)
       base_map_stem = argv[++i];
     } else if (arg == "--updater_map" && has_value) {
       updater_map_stem = argv[++i];
+    } else if (arg == "--display-graph") {
+      display_graph = true;
     } else if (arg == "-h" || arg == "--help") {
       usage(argv[0]);
       return 0;
@@ -672,7 +612,6 @@ int main(int argc, char ** argv)
 
   std::cout << "\n\n---\n\nStarting: print merge results" << std::endl;
 
-  const karto::LocalizedRangeScanVector final_scans = fused_mapper->GetAllProcessedScans();
   const size_t total_merged = stats.base_map_merged + stats.updater_map_merged;
 
   std::cout << "\nresult\n"
@@ -724,17 +663,12 @@ int main(int argc, char ** argv)
   std::cout << "\n\n---\n\nStarting: save the 2D merged map" << std::endl;
 
   std::string err;
-  if (!saveMapImage(final_scans, 0.05, out_stem, err)) {
+  if (!saveMapImage(fused_mapper, display_graph, 0.05, out_stem, err)) {
     std::cerr << "error: failed to write merged map: " << err << "\n";
     finish(1);
   }
-  std::cout << "wrote " << out_stem << ".png / .yaml" << std::endl;
-
-  if (!saveGraphOverlay(fused_mapper, 0.05, out_stem, err)) {
-    std::cerr << "error: failed to write graph overlay: " << err << "\n";
-    finish(1);
-  }
-  std::cout << "wrote " << out_stem << "_graph.png" << std::endl;
+  std::cout << "wrote " << out_stem << ".png / .yaml"
+            << (display_graph ? " (with graph overlay)" : "") << std::endl;
 
   std::cout << "\nDone: save the 2D merged map" << std::endl;
 
