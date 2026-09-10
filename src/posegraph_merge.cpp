@@ -67,8 +67,8 @@ namespace
 
 struct Stats
 {
-  size_t scans_from_base_map = 0;
-  size_t scans_from_updater_map = 0;
+  size_t nodes_from_base_map = 0;
+  size_t nodes_from_updater_map = 0;
   size_t base_map_merged = 0;
   size_t base_map_dropped = 0;
   size_t updater_map_merged = 0;
@@ -379,6 +379,11 @@ void usage(const char * argv0)
 
 int main(int argc, char ** argv)
 {
+
+  /// Parse command-line arguments
+
+  std::cout << "\n\n---\n\nStarting: parse command-line arguments" << std::endl;
+
   std::string base_map_stem;
   std::string updater_map_stem;
 
@@ -404,6 +409,13 @@ int main(int argc, char ** argv)
     return 2;
   }
 
+  std::cout << "\nDone: parse command-line arguments (base_map=" << base_map_stem
+            << ", updater_map=" << updater_map_stem << ")" << std::endl;
+
+  /// Load base_map and updater_map
+
+  std::cout << "\n\n---\n\nStarting: load base_map and updater_map" << std::endl;
+
   // Deliberately leaked - nothing may run ~Mapper / ~Dataset / UnregisterSensor. See finish().
   auto * base_mapper = new karto::Mapper();
   auto * base_dataset = new karto::Dataset();
@@ -422,6 +434,12 @@ int main(int argc, char ** argv)
     finish(1);
   }
 
+  std::cout << "\nDone: load base_map and updater_map" << std::endl;
+
+  /// Register lasers
+
+  std::cout << "\n\n---\n\nStarting: register lasers" << std::endl;
+
   std::set<std::string> registered_names;
   const size_t base_map_lasers = registerLasers(base_dataset, registered_names);
   const size_t updater_map_lasers = registerLasers(updater_dataset, registered_names);
@@ -432,23 +450,35 @@ int main(int argc, char ** argv)
   std::cout << "  " << base_map_lasers << " laser(s) from base_map, " << updater_map_lasers
             << " new laser(s) from updater_map" << std::endl;
 
+  std::cout << "\nDone: register lasers" << std::endl;
+
+  /// Count nodes in each input graph
+
+  std::cout << "\n\n---\n\nStarting: count nodes in each input graph" << std::endl;
+
   Stats stats;
   for (const auto & by_sensor : base_mapper->GetGraph()->GetVertices()) {
     for (const auto & entry : by_sensor.second) {
       if (entry.second != nullptr && entry.second->GetObject() != nullptr) {
-        ++stats.scans_from_base_map;
+        ++stats.nodes_from_base_map;
       }
     }
   }
   for (const auto & by_sensor : updater_mapper->GetGraph()->GetVertices()) {
     for (const auto & entry : by_sensor.second) {
       if (entry.second != nullptr && entry.second->GetObject() != nullptr) {
-        ++stats.scans_from_updater_map;
+        ++stats.nodes_from_updater_map;
       }
     }
   }
-  std::cout << "base_map: " << stats.scans_from_base_map << " scans, updater_map: "
-            << stats.scans_from_updater_map << " scans" << std::endl;
+  std::cout << "base_map: " << stats.nodes_from_base_map << " nodes, updater_map: "
+            << stats.nodes_from_updater_map << " nodes" << std::endl;
+
+  std::cout << "\nDone: count nodes in each input graph" << std::endl;
+
+  /// Create the fused pose graph
+
+  std::cout << "\n\n---\n\nStarting: create the fused pose graph" << std::endl;
 
   // Neither base_map nor updater_map is mutated: base_mapper/updater_mapper stay exactly as
   // loaded. Everything from both graphs is combined into this fresh, independent third Mapper
@@ -463,6 +493,12 @@ int main(int argc, char ** argv)
   // from the primary registered laser).
   auto * primary_laser = dynamic_cast<karto::LaserRangeFinder *>(base_dataset->GetLasers()[0]);
   fused_mapper->Initialize(primary_laser->GetRangeThreshold());
+
+  std::cout << "\nDone: create the fused pose graph" << std::endl;
+
+  /// Register sensor names on the fused graph
+
+  std::cout << "\n\n---\n\nStarting: register sensor names on the fused graph" << std::endl;
 
   // Register every sensor name from BOTH graphs before either is replayed - updater_map may use
   // a name base_map never did, and it has to be known before its first Process() call.
@@ -480,6 +516,12 @@ int main(int argc, char ** argv)
       }
     }
   }
+
+  std::cout << "\nDone: register sensor names on the fused graph" << std::endl;
+
+  /// Configure scan-matching / loop-closure parameters
+
+  std::cout << "\n\n---\n\nStarting: configure scan-matching / loop-closure parameters" << std::endl;
 
   // Mapper's own scan-matching/loop-closure tuning otherwise defaults to karto's stock
   // library values, not necessarily this robot's actual production tuning. Apply the same
@@ -535,6 +577,13 @@ int main(int argc, char ** argv)
             << " min_response_coarse=" << fused_mapper->getParamLoopMatchMinimumResponseCoarse()
             << " max_variance_coarse=" << fused_mapper->getParamLoopMatchMaximumVarianceCoarse()
             << " min_response_fine=" << fused_mapper->getParamLoopMatchMinimumResponseFine()
+            << std::endl;
+
+  std::cout << "\nDone: configure scan-matching / loop-closure parameters" << std::endl;
+
+  /// Replay both graphs through the fused graph's own scan matcher/solver
+
+  std::cout << "\n\n---\n\nStarting: replay both graphs through the fused graph's own scan matcher/solver"
             << std::endl;
 
   std::set<karto::LocalizedRangeScan *> base_map_scan_set;
@@ -616,13 +665,20 @@ int main(int argc, char ** argv)
     solver.release();
   }
 
+  std::cout << "\nDone: replay both graphs through the fused graph's own scan matcher/solver"
+            << std::endl;
+
+  /// Print merge results
+
+  std::cout << "\n\n---\n\nStarting: print merge results" << std::endl;
+
   const karto::LocalizedRangeScanVector final_scans = fused_mapper->GetAllProcessedScans();
   const size_t total_merged = stats.base_map_merged + stats.updater_map_merged;
 
   std::cout << "\nresult\n"
-            << "  base_map scans merged/dropped    : " << stats.base_map_merged << " / "
+            << "  base_map nodes merged/dropped    : " << stats.base_map_merged << " / "
             << stats.base_map_dropped << "\n"
-            << "  updater_map scans merged/dropped : " << stats.updater_map_merged << " / "
+            << "  updater_map nodes merged/dropped : " << stats.updater_map_merged << " / "
             << stats.updater_map_dropped << std::endl;
 
   if (total_merged > 0) {
@@ -637,24 +693,35 @@ int main(int argc, char ** argv)
               << "  local match covariance trace (x+y variance, m^2), min/mean/max   : "
               << stats.cov_trace_min << " / " << cov_trace_mean << " / "
               << stats.cov_trace_max << "\n"
-              << "  updater_map scans shifted by CorrectPoses(), mean/max (m)        : "
+              << "  updater_map nodes shifted by CorrectPoses(), mean/max (m)        : "
               << updater_map_shift_mean << " / " << stats.updater_map_shift_max << "\n"
-              << "  base_map scans moved at all                                     : "
+              << "  base_map nodes moved at all                                     : "
               << stats.base_map_scans_shifted << "\n"
-              << "  base_map scans shifted by CorrectPoses(), mean/max (m)           : "
+              << "  base_map nodes shifted by CorrectPoses(), mean/max (m)           : "
               << base_map_shift_mean << " / " << stats.base_map_shift_max << std::endl;
   }
 
+  std::cout << "\nDone: print merge results" << std::endl;
+
   const std::string out_stem = "merged";
 
-  try {
-    fused_mapper->SaveToFile(out_stem + ".posegraph");
-    fused_dataset->SaveToFile(out_stem + ".data");
-  } catch (const std::exception & e) {
-    std::cerr << "error: failed to write merged pose graph: " << e.what() << "\n";
-    finish(1);
-  }
-  std::cout << "wrote " << out_stem << ".posegraph / .data" << std::endl;
+
+  /// Saves the merged posegraph
+
+
+  // try {
+  //   fused_mapper->SaveToFile(out_stem + ".posegraph");
+  //   fused_dataset->SaveToFile(out_stem + ".data");
+  // } catch (const std::exception & e) {
+  //   std::cerr << "error: failed to write merged pose graph: " << e.what() << "\n";
+  //   finish(1);
+  // }
+  // std::cout << "wrote " << out_stem << ".posegraph / .data" << std::endl;
+
+
+  /// Saves the 2D merged map
+
+  std::cout << "\n\n---\n\nStarting: save the 2D merged map" << std::endl;
 
   std::string err;
   if (!saveMapImage(final_scans, 0.05, out_stem, err)) {
@@ -668,6 +735,8 @@ int main(int argc, char ** argv)
     finish(1);
   }
   std::cout << "wrote " << out_stem << "_graph.png" << std::endl;
+
+  std::cout << "\nDone: save the 2D merged map" << std::endl;
 
   finish(0);
 }
