@@ -181,12 +181,11 @@ add_executable(merge_maps_kinematic src/merge_maps_kinematic.cpp)
 target_link_libraries(merge_maps_kinematic kartoSlamToolbox toolbox_common)
 
 #### Offline pose-graph rasterizer
-# Renders a serialized pose graph to an image + yaml at an arbitrary resolution,
-# without publishing on /map. Lets the live map stay coarse while the saved map
-# is rendered fine, once, at save time.
+# Renders a serialized pose graph to an image + yaml at an arbitrary resolution.
 add_executable(map_rasterizer src/map_rasterizer.cpp)
 ament_target_dependencies(map_rasterizer ${dependencies} nav2_map_server)
-target_link_libraries(map_rasterizer kartoSlamToolbox toolbox_common)
+find_package(PNG REQUIRED)
+target_link_libraries(map_rasterizer kartoSlamToolbox toolbox_common PNG::PNG)
 
 #### testing
 #if(BUILD_TESTING)

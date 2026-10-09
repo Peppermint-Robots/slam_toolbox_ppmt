@@ -16,41 +16,57 @@
 /*
  * Offline pose-graph rasterizer.
  *
- * Renders a serialized pose graph (<name>.posegraph + <name>.data) straight to
- * an occupancy-grid image + yaml at an arbitrary resolution, without going
- * through the /map topic.
+ * Renders a saved pose graph (<name>.posegraph + <name>.data) to <name>.png +
+ * <name>.yaml at any resolution.
  *
- * This exists because the live map is rebuilt from scratch every
- * map_update_interval: OccupancyGrid::CreateFromScans() re-raytraces the entire
- * pose graph, so its cost is O(cells) + O(scans x beams x range/resolution) and
- * it is paid over and over while mapping. At a fine resolution that is far too
- * slow to publish continuously (and the /map publisher is transient_local +
- * reliable, so every publish also ships the whole grid).
+ * The live map is raytraced from the whole pose graph on every
+ * map_update_interval and published on "/map" topic, so it has to stay coarse.
+ * This tool does the fine resolution render once, at save time.
  *
- * So keep the live map coarse for operator feedback and run this once, at save
- * time, to get the fine-resolution artifact. Nothing here touches DDS, so the
- * grid never has to cross a transport.
+ * The image is written directly with libpng, one row at a time, rather than via
+ * nav2_map_server::saveMapToFile, which sets pixels one by one through
+ * GraphicsMagick and is ~18x slower on large maps (--legacy-writer keeps this option).
  */
 
+// System
 #include <sys/resource.h>
 
+// C++
 #include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iomanip>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
-#include "karto_sdk/Mapper.h"
+// Third-party
+#include <png.h>
+
+// ROS2
+#include <tf2/utils.h>
+
+#include "rclcpp/rclcpp.hpp"
+
+// Nav2
 #include "nav2_map_server/map_io.hpp"
 #include "nav2_map_server/map_mode.hpp"
-#include "rclcpp/rclcpp.hpp"
+
+// SLAM Toolbox
+#include "karto_sdk/Mapper.h"
 #include "slam_toolbox/serialization.hpp"
 #include "slam_toolbox/toolbox_types.hpp"
 #include "slam_toolbox/visualization_utils.hpp"
 
 namespace
 {
+
+using karto_map_mode = nav2_map_server::MapMode;
 
 struct Options
 {
@@ -61,15 +77,193 @@ struct Options
   double free_thresh = 0.1;
   std::string image_format = "png";
   std::string mode = "trinary";
-  // Guardrail against a stray outlier scan blowing the bounding box up: karto
-  // holds 9 bytes/cell while rastering (int8 occupancy + two uint32 counter
-  // grids), so 150M cells is already ~1.35GB of working set.
-  // Max map size that can be rasterized at 1cm resolution: ~122 × 122 m, ~15,000 m²
-  long long max_cells = 754000000LL;
   // Boost.Serialization recurses through the graph in LoadFromFile(), which can
-  // overflow the default 8MB stack on a large map. Mirrors stack_size_to_use.
+  // overflow the default 8MB stack on a large map. Mirrors stack_size_to_use from slam_tb params.
   long long stack_size = 40000000LL;
+  bool legacy_writer = false;
 };
+
+// Occupancy value -> 8-bit grey, pixel-identical to nav2's per-mode switch (verified
+// against libmap_io for every int8 cell value, all modes and formats).
+// Follows the same logic as tryWriteMapToFile() in nav2_map_server/map_io.cpp:
+// https://github.com/Peppermint-Robots/navigation2/blob/humble_main_ppmt/nav2_map_server/src/map_io.cpp
+inline uint8_t cellToGrey(
+  int8_t cell, karto_map_mode mode, int free_thresh_int, int occupied_thresh_int)
+{
+  switch (mode) {
+    case nav2_map_server::MapMode::Trinary:
+      if (cell < 0 || 100 < cell) {
+        return 205;
+      } else if (cell <= free_thresh_int) {
+        return 254;
+      } else if (occupied_thresh_int <= cell) {
+        return 0;
+      }
+      return 205;
+    case nav2_map_server::MapMode::Scale:
+      if (cell < 0 || 100 < cell) {
+        return 127;  // nav2's ColorGray{0.5}; the PNG also marks it transparent
+      }
+      // Truncating, as GraphicsMagick does: cell 1 -> 252, not 253.
+      return static_cast<uint8_t>((100.0 - cell) / 100.0 * 255.0);
+    case nav2_map_server::MapMode::Raw:
+    default:
+      if (cell < 0 || 100 < cell) {
+        return 255;
+      }
+      return static_cast<uint8_t>(cell);
+  }
+}
+
+// Fill Row `y` of the output image.
+inline void fillRow(
+  const nav_msgs::msg::OccupancyGrid & map, size_t y, karto_map_mode mode, double free_thresh,
+  double occupied_thresh, bool alpha, std::vector<uint8_t> & row)
+{
+  const int free_thresh_int = std::rint(free_thresh * 100.0);
+  const int occupied_thresh_int = std::rint(occupied_thresh * 100.0);
+  const size_t w = map.info.width;
+  const int8_t * src = &map.data[w * (map.info.height - y - 1)];
+  for (size_t x = 0; x < w; x++) {
+    const uint8_t grey = cellToGrey(src[x], mode, free_thresh_int, occupied_thresh_int);
+    if (alpha) {
+      row[2 * x] = grey;
+      row[2 * x + 1] = (src[x] < 0 || 100 < src[x]) ? 0 : 255;
+    } else {
+      row[x] = grey;
+    }
+  }
+}
+
+bool writePng(
+  const std::string & file, const nav_msgs::msg::OccupancyGrid & map, karto_map_mode mode,
+  double free_thresh, double occupied_thresh, const rclcpp::Logger & logger)
+{
+  FILE * fp = fopen(file.c_str(), "wb");
+  if (fp == nullptr) {
+    RCLCPP_ERROR(logger, "map_rasterizer: cannot open '%s' for writing.", file.c_str());
+    return false;
+  }
+  png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+  png_infop info = png ? png_create_info_struct(png) : nullptr;
+  if (png == nullptr || info == nullptr) {
+    if (png != nullptr) {
+      png_destroy_write_struct(&png, info ? &info : nullptr);
+    }
+    fclose(fp);
+    RCLCPP_ERROR(logger, "map_rasterizer: libpng allocation failed.");
+    return false;
+  }
+  const bool alpha = (mode == nav2_map_server::MapMode::Scale);
+  // Declared before setjmp: a longjmp out of png_write_row must not skip its destructor.
+  std::vector<uint8_t> row(map.info.width * (alpha ? 2 : 1));
+  // NOTE: (Ulkesh, 09-10-2026): libpng reports errors by longjmp'ing back here. Refer this for more
+  // details: https://github.com/pnggroup/libpng/blob/libpng16/example.c#L204
+  if (setjmp(png_jmpbuf(png))) {
+    png_destroy_write_struct(&png, &info);
+    fclose(fp);
+    std::remove(file.c_str());
+    RCLCPP_ERROR(logger, "map_rasterizer: libpng failed writing '%s'.", file.c_str());
+    return false;
+  }
+
+  png_init_io(png, fp);
+  png_set_IHDR(
+    png, info, map.info.width, map.info.height, 8,
+    alpha ? PNG_COLOR_TYPE_GRAY_ALPHA : PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE,
+    PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+  png_write_info(png, info);
+
+  for (size_t y = 0; y < map.info.height; y++) {
+    fillRow(map, y, mode, free_thresh, occupied_thresh, alpha, row);
+    png_write_row(png, row.data());
+  }
+  png_write_end(png, nullptr);
+  png_destroy_write_struct(&png, &info);
+  fclose(fp);
+  return true;
+}
+
+bool writePgm(
+  const std::string & file, const nav_msgs::msg::OccupancyGrid & map, karto_map_mode mode,
+  double free_thresh, double occupied_thresh, const rclcpp::Logger & logger)
+{
+  FILE * fp = fopen(file.c_str(), "wb");
+  if (fp == nullptr) {
+    RCLCPP_ERROR(logger, "map_rasterizer: cannot open '%s' for writing.", file.c_str());
+    return false;
+  }
+  fprintf(fp, "P5\n%u %u\n255\n", map.info.width, map.info.height);
+  std::vector<uint8_t> row(map.info.width);
+  for (size_t y = 0; y < map.info.height; y++) {
+    fillRow(map, y, mode, free_thresh, occupied_thresh, false, row);
+    if (fwrite(row.data(), 1, row.size(), fp) != row.size()) {
+      fclose(fp);
+      RCLCPP_ERROR(logger, "map_rasterizer: short write on '%s'.", file.c_str());
+      return false;
+    }
+  }
+  fclose(fp);
+  return true;
+}
+
+// Same output as nav2_map_server::saveMapToFile's YAML
+bool writeYaml(
+  const std::string & file, const std::string & image_name,
+  const nav_msgs::msg::OccupancyGrid & map, karto_map_mode mode, double free_thresh,
+  double occupied_thresh, const rclcpp::Logger & logger)
+{
+  const double yaw = tf2::getYaw(map.info.origin.orientation);
+
+  std::ostringstream o;
+  o << std::setprecision(3);
+  o << "image: " << image_name << "\n";
+  o << "mode: " << nav2_map_server::map_mode_to_string(mode) << "\n";
+  o << "resolution: " << map.info.resolution << "\n";
+  o << "origin: [" << map.info.origin.position.x << ", " << map.info.origin.position.y << ", "
+    << yaw << "]\n";
+  o << "negate: 0\n";
+  o << "occupied_thresh: " << occupied_thresh << "\n";
+  o << "free_thresh: " << free_thresh;
+
+  std::ofstream out(file);
+  if (!out) {
+    RCLCPP_ERROR(logger, "map_rasterizer: cannot open '%s' for writing.", file.c_str());
+    return false;
+  }
+  out << o.str();
+  return out.good();
+}
+
+bool saveMapDirect(
+  const nav_msgs::msg::OccupancyGrid & map, const std::string & basename,
+  const std::string & image_format, karto_map_mode mode, double free_thresh, double occupied_thresh,
+  const rclcpp::Logger & logger)
+{
+  const std::string image_file = basename + "." + image_format;
+  bool ok = false;
+  if (image_format == "png") {
+    ok = writePng(image_file, map, mode, free_thresh, occupied_thresh, logger);
+  } else if (image_format == "pgm") {
+    ok = writePgm(image_file, map, mode, free_thresh, occupied_thresh, logger);
+  } else {
+    RCLCPP_ERROR(
+      logger, "map_rasterizer: --format %s has no direct writer; use --legacy-writer.",
+      image_format.c_str());
+    return false;
+  }
+  if (!ok) {
+    RCLCPP_ERROR(
+      logger, "map_rasterizer: failed to write the %s image '%s'; not writing the yaml.",
+      image_format.c_str(), image_file.c_str());
+    return false;
+  }
+
+  const size_t slash = image_file.find_last_of("/\\");
+  const std::string image_name =
+    (slash == std::string::npos) ? image_file : image_file.substr(slash + 1);
+  return writeYaml(basename + ".yaml", image_name, map, mode, free_thresh, occupied_thresh, logger);
+}
 
 const char * kUsage =
   "Usage: map_rasterizer --posegraph <basename> --output <basename> [options]\n"
@@ -87,8 +281,9 @@ const char * kUsage =
   "  --free-thresh <0-1>      Free threshold (default 0.1).\n"
   "  --format <png|pgm|bmp>   Image format (default png).\n"
   "  --mode <trinary|scale|raw>  Map mode (default trinary).\n"
-  "  --max-cells <n>          Refuse grids larger than this (default 150000000).\n"
   "  --stack-size <bytes>     RLIMIT_STACK for deserialization (default 40000000).\n"
+  "  --legacy-writer          Write via nav2_map_server instead of the direct writer\n"
+  "                           (much slower; for output comparison only).\n"
   "  --help                   Print this message.\n";
 
 bool takeValue(int argc, char ** argv, int & i, const rclcpp::Logger & logger, std::string & out)
@@ -171,14 +366,12 @@ bool parseArgs(int argc, char ** argv, const rclcpp::Logger & logger, Options & 
       if (!takeValue(argc, argv, i, logger, opts.mode)) {
         return false;
       }
-    } else if (arg == "--max-cells") {
-      if (!takeLongLong(argc, argv, i, logger, opts.max_cells)) {
-        return false;
-      }
     } else if (arg == "--stack-size") {
       if (!takeLongLong(argc, argv, i, logger, opts.stack_size)) {
         return false;
       }
+    } else if (arg == "--legacy-writer") {
+      opts.legacy_writer = true;
     } else {
       RCLCPP_ERROR(logger, "map_rasterizer: unrecognised argument '%s'.", arg.c_str());
       return false;
@@ -199,30 +392,6 @@ bool parseArgs(int argc, char ** argv, const rclcpp::Logger & logger, Options & 
   }
 
   return true;
-}
-
-// Replica of the protected karto::OccupancyGrid::ComputeDimensions(). We need
-// the grid size *before* allocating it so an absurd bounding box can be
-// rejected with a clear message rather than a bad_alloc or an OOM kill, but the
-// real one is not reachable from outside the class. Cheap either way: it only
-// walks each scan's bounding box.
-void computeDimensions(
-  const karto::LocalizedRangeScanVector & scans, double resolution, kt_int32s & width,
-  kt_int32s & height)
-{
-  karto::BoundingBox2 bounding_box;
-  for (const auto * scan : scans) {
-    if (scan == nullptr) {
-      continue;
-    }
-    bounding_box.Add(scan->GetBoundingBox());
-  }
-
-  const double scale = 1.0 / resolution;
-  const karto::Size2<kt_double> size = bounding_box.GetSize();
-
-  width = static_cast<kt_int32s>(karto::math::Round(size.GetWidth() * scale));
-  height = static_cast<kt_int32s>(karto::math::Round(size.GetHeight() * scale));
 }
 
 // Boost.Serialization recurses through the pose graph while deserializing, so
@@ -347,36 +516,6 @@ int main(int argc, char ** argv)
     return 1;
   }
 
-  // ---- Size check before we commit to the allocation ----------------------
-  kt_int32s width = 0, height = 0;
-  try {
-    computeDimensions(scans, opts.resolution, width, height);
-  } catch (const karto::Exception & e) {
-    RCLCPP_ERROR(
-      logger, "map_rasterizer: could not compute map dimensions: %s", e.GetErrorMessage().c_str());
-    rclcpp::shutdown();
-    return 1;
-  }
-
-  const long long cells = static_cast<long long>(width) * static_cast<long long>(height);
-  RCLCPP_INFO(
-    logger,
-    "map_rasterizer: %zu scans -> %d x %d cells at %.4f m/cell (%.1f x %.1f m), "
-    "~%lld MB working set.",
-    scans.size(), static_cast<int>(width), static_cast<int>(height), opts.resolution,
-    width * opts.resolution, height * opts.resolution, (cells * 9LL) / (1024LL * 1024LL));
-
-  if (cells > opts.max_cells) {
-    RCLCPP_ERROR(
-      logger,
-      "map_rasterizer: refusing to raster %lld cells (limit %lld). "
-      "Rastering holds ~9 bytes/cell, so this needs ~%lld MB. "
-      "Use a coarser --resolution or raise --max-cells if the machine has the RAM.",
-      cells, opts.max_cells, (cells * 9LL) / (1024LL * 1024LL));
-    rclcpp::shutdown();
-    return 1;
-  }
-
   // ---- Raster -------------------------------------------------------------
   nav_msgs::msg::OccupancyGrid map;
   map.header.frame_id = "map";
@@ -397,9 +536,9 @@ int main(int argc, char ** argv)
     } catch (const std::bad_alloc &) {
       RCLCPP_ERROR(
         logger,
-        "map_rasterizer: out of memory building a %lld cell grid. "
+        "map_rasterizer: out of memory building the grid from %zu scans at %.4f m/cell. "
         "Use a coarser --resolution.",
-        cells);
+        scans.size(), opts.resolution);
       rclcpp::shutdown();
       return 1;
     }
@@ -412,13 +551,19 @@ int main(int argc, char ** argv)
 
     vis_utils::toNavMap(occ_grid, map);
 
-    // Free karto's three grids before handing off to the image writer, which
-    // allocates its own full-size buffer. Keeps peak RSS to one copy, not two.
+    // Free up memory before writing the image
     delete occ_grid;
   }
   const auto raster_secs =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - raster_started).count();
-  RCLCPP_INFO(logger, "map_rasterizer: rastered in %.1f s.", raster_secs);
+  const long long cells =
+    static_cast<long long>(map.info.width) * static_cast<long long>(map.info.height);
+  RCLCPP_INFO(
+    logger,
+    "map_rasterizer: rastered %zu scans -> %u x %u cells at %.4f m/cell (%.1f x %.1f m) in "
+    "%.1f s.",
+    scans.size(), map.info.width, map.info.height, opts.resolution,
+    map.info.width * opts.resolution, map.info.height * opts.resolution, raster_secs);
 
   // ---- Write image + yaml -------------------------------------------------
   nav2_map_server::SaveParameters save_parameters;
@@ -432,7 +577,10 @@ int main(int argc, char ** argv)
 
   bool saved = false;
   try {
-    saved = nav2_map_server::saveMapToFile(map, save_parameters);
+    saved = opts.legacy_writer ? nav2_map_server::saveMapToFile(map, save_parameters)
+                               : saveMapDirect(
+                                   map, opts.output, opts.image_format, mode, opts.free_thresh,
+                                   opts.occupied_thresh, logger);
   } catch (const std::exception & e) {
     RCLCPP_ERROR(logger, "map_rasterizer: failed to write map: %s", e.what());
     rclcpp::shutdown();
