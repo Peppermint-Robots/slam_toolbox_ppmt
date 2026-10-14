@@ -6540,7 +6540,12 @@ public:
     for (std::map<Name, Sensor *>::iterator iter = m_SensorNameLookup.begin();
       iter != m_SensorNameLookup.end(); ++iter)
     {
-      karto::SensorManager::GetInstance()->UnregisterSensor(iter->second);
+      // Must not throw: ~Dataset() calls this. Skips sensors that were never
+      // registered, e.g. after a .data that failed to load part-way.
+      try {
+        karto::SensorManager::GetInstance()->UnregisterSensor(iter->second);
+      } catch (const Exception &) {
+      }
     }
 
     forEach(ObjectVector, &m_Lasers)
