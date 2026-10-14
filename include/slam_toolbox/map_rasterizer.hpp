@@ -27,6 +27,7 @@
 #define SLAM_TOOLBOX__MAP_RASTERIZER_HPP_
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
@@ -44,6 +45,19 @@ enum class ResultCode : uint8_t {
   RASTER_FAILED = 5,
   WRITE_FAILED = 6,
 };
+
+// Stages of a render reported to a ProgressCallback. Values match the PHASE_* constants in
+// msg/RasterizeProgress.msg.
+enum class Phase : uint8_t {
+  LOADING = 0,
+  RASTERING = 1,
+  WRITING = 2,
+};
+
+// Called as a render progresses: `done` of `total` scans while rastering, rows while writing.
+// Loading has no progress of its own: 0 of 1 at start, 1 of 1 when done. Called on the
+// rendering thread, often (once per scan or row), so keep it cheap.
+using ProgressCallback = std::function<void(Phase phase, uint32_t done, uint32_t total)>;
 
 // Boost.Serialization recurses through the graph in LoadFromFile(), which can
 // overflow the default 8MB stack on a large map. Mirrors stack_size_to_use from slam_tb params.
@@ -78,7 +92,9 @@ struct RenderResult
 std::string validate(const RenderRequest & request);
 
 // Renders request.posegraph to request.output.<format> + .yaml.
-RenderResult renderPosegraph(const RenderRequest & request, const rclcpp::Node::SharedPtr & node);
+RenderResult renderPosegraph(
+  const RenderRequest & request, const rclcpp::Node::SharedPtr & node,
+  const ProgressCallback & progress = {});
 
 }  // namespace map_rasterizer
 

@@ -31,6 +31,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <memory>
 #include <new>
@@ -61,6 +62,14 @@ namespace
 {
 
 using karto_map_mode = nav2_map_server::MapMode;
+
+// Reports `done` of `total`, if anyone is listening.
+inline void report(const ProgressCallback & progress, Phase phase, uint32_t done, uint32_t total)
+{
+  if (progress) {
+    progress(phase, done, total);
+  }
+}
 
 // Occupancy value -> 8-bit grey, pixel-identical to nav2's per-mode switch (verified
 // against libmap_io for every int8 cell value, all modes and formats).
@@ -116,7 +125,8 @@ inline void fillRow(
 
 bool writePng(
   const std::string & file, const nav_msgs::msg::OccupancyGrid & map, karto_map_mode mode,
-  double free_thresh, double occupied_thresh, const rclcpp::Logger & logger)
+  double free_thresh, double occupied_thresh, const ProgressCallback & progress,
+  const rclcpp::Logger & logger)
 {
   FILE * fp = fopen(file.c_str(), "wb");
   if (fp == nullptr) {
@@ -156,6 +166,7 @@ bool writePng(
   for (size_t y = 0; y < map.info.height; y++) {
     fillRow(map, y, mode, free_thresh, occupied_thresh, alpha, row);
     png_write_row(png, row.data());
+    report(progress, Phase::WRITING, y + 1, map.info.height);
   }
   png_write_end(png, nullptr);
   png_destroy_write_struct(&png, &info);
@@ -165,7 +176,8 @@ bool writePng(
 
 bool writePgm(
   const std::string & file, const nav_msgs::msg::OccupancyGrid & map, karto_map_mode mode,
-  double free_thresh, double occupied_thresh, const rclcpp::Logger & logger)
+  double free_thresh, double occupied_thresh, const ProgressCallback & progress,
+  const rclcpp::Logger & logger)
 {
   FILE * fp = fopen(file.c_str(), "wb");
   if (fp == nullptr) {
@@ -181,6 +193,7 @@ bool writePgm(
       RCLCPP_ERROR(logger, "map_rasterizer: short write on '%s'.", file.c_str());
       return false;
     }
+    report(progress, Phase::WRITING, y + 1, map.info.height);
   }
   fclose(fp);
   return true;
@@ -216,14 +229,14 @@ bool writeYaml(
 bool saveMapDirect(
   const nav_msgs::msg::OccupancyGrid & map, const std::string & basename,
   const std::string & image_format, karto_map_mode mode, double free_thresh, double occupied_thresh,
-  const rclcpp::Logger & logger)
+  const ProgressCallback & progress, const rclcpp::Logger & logger)
 {
   const std::string image_file = basename + "." + image_format;
   bool ok = false;
   if (image_format == "png") {
-    ok = writePng(image_file, map, mode, free_thresh, occupied_thresh, logger);
+    ok = writePng(image_file, map, mode, free_thresh, occupied_thresh, progress, logger);
   } else if (image_format == "pgm") {
-    ok = writePgm(image_file, map, mode, free_thresh, occupied_thresh, logger);
+    ok = writePgm(image_file, map, mode, free_thresh, occupied_thresh, progress, logger);
   } else {
     RCLCPP_ERROR(
       logger, "map_rasterizer: --format %s has no direct writer; use --legacy-writer.",
@@ -242,6 +255,59 @@ bool saveMapDirect(
     (slash == std::string::npos) ? image_file : image_file.substr(slash + 1);
   return writeYaml(basename + ".yaml", image_name, map, mode, free_thresh, occupied_thresh, logger);
 }
+
+// A karto occupancy grid that reports progress after each scan it adds.
+// CreateFromScans() below is a copy of karto's (Karto.h).
+class ReportingOccupancyGrid : public karto::OccupancyGrid
+{
+public:
+  static std::unique_ptr<ReportingOccupancyGrid> create(
+    const karto::LocalizedRangeScanVector & scans, double resolution,
+    const ProgressCallback & progress)
+  {
+    if (scans.empty()) {
+      return nullptr;
+    }
+    kt_int32s width = 0;
+    kt_int32s height = 0;
+    karto::Vector2<kt_double> offset;
+    ComputeDimensions(scans, resolution, width, height, offset);
+    std::unique_ptr<ReportingOccupancyGrid> grid(
+      new ReportingOccupancyGrid(width, height, offset, resolution, progress));
+    grid->CreateFromScans(scans);
+    return grid;
+  }
+
+private:
+  ReportingOccupancyGrid(
+    kt_int32s width, kt_int32s height, const karto::Vector2<kt_double> & offset,
+    kt_double resolution, const ProgressCallback & progress)
+  : karto::OccupancyGrid(width, height, offset, resolution), progress_(progress)
+  {
+  }
+
+  void CreateFromScans(const karto::LocalizedRangeScanVector & rScans) override
+  {
+    m_pCellPassCnt->Resize(GetWidth(), GetHeight());
+    m_pCellPassCnt->GetCoordinateConverter()->SetOffset(GetCoordinateConverter()->GetOffset());
+
+    m_pCellHitsCnt->Resize(GetWidth(), GetHeight());
+    m_pCellHitsCnt->GetCoordinateConverter()->SetOffset(GetCoordinateConverter()->GetOffset());
+
+    const auto total = static_cast<uint32_t>(rScans.size());
+    uint32_t done = 0;
+    for (karto::LocalizedRangeScan * scan : rScans) {
+      if (scan != nullptr) {
+        AddScan(scan);
+      }
+      report(progress_, Phase::RASTERING, ++done, total);
+    }
+
+    Update();
+  }
+
+  ProgressCallback progress_;
+};
 
 // Removes the staging directory on every exit path.
 class StagingDir
@@ -303,7 +369,9 @@ double secondsSince(std::chrono::steady_clock::time_point start)
 //   3. raster every scan into an occupancy grid at the requested resolution
 //   4. write the image + yaml into a staging directory, then rename both into place
 // Each step returns a failed RenderResult on error.
-RenderResult render(const RenderRequest & request, const rclcpp::Node::SharedPtr & node)
+RenderResult render(
+  const RenderRequest & request, const rclcpp::Node::SharedPtr & node,
+  const ProgressCallback & progress)
 {
   const auto logger = node->get_logger();
   RenderResult result;
@@ -316,6 +384,7 @@ RenderResult render(const RenderRequest & request, const rclcpp::Node::SharedPtr
   const karto_map_mode mode = nav2_map_server::map_mode_from_string(request.mode);
 
   // ---- Load pose graph -----------------------------------------
+  report(progress, Phase::LOADING, 0, 1);
   const auto deserialize_started = std::chrono::steady_clock::now();
 
   for (const char * extension : {".posegraph", ".data"}) {
@@ -379,6 +448,7 @@ RenderResult render(const RenderRequest & request, const rclcpp::Node::SharedPtr
   }
   result.scans = static_cast<uint32_t>(scans.size());
   result.deserialize_s = secondsSince(deserialize_started);
+  report(progress, Phase::LOADING, 1, 1);
 
   // ---- Raster -------------------------------------------------------------
   const auto raster_started = std::chrono::steady_clock::now();
@@ -390,9 +460,9 @@ RenderResult render(const RenderRequest & request, const rclcpp::Node::SharedPtr
   map.info.origin.orientation.w = 1.0;
 
   {
-    karto::OccupancyGrid * occ_grid = nullptr;
+    std::unique_ptr<ReportingOccupancyGrid> occ_grid;
     try {
-      occ_grid = karto::OccupancyGrid::CreateFromScans(scans, request.resolution);
+      occ_grid = ReportingOccupancyGrid::create(scans, request.resolution, progress);
     } catch (const karto::Exception & e) {
       return fail(
         result, ResultCode::RASTER_FAILED, "failed to build the grid: " + e.GetErrorMessage(),
@@ -408,11 +478,9 @@ RenderResult render(const RenderRequest & request, const rclcpp::Node::SharedPtr
       return fail(result, ResultCode::RASTER_FAILED, "CreateFromScans returned no grid.", logger);
     }
 
-    vis_utils::toNavMap(occ_grid, map);
-
-    // Free up memory before writing the image
-    delete occ_grid;
+    vis_utils::toNavMap(occ_grid.get(), map);
   }
+
   result.raster_s = secondsSince(raster_started);
   result.width = map.info.width;
   result.height = map.info.height;
@@ -452,11 +520,14 @@ RenderResult render(const RenderRequest & request, const rclcpp::Node::SharedPtr
       save_parameters.free_thresh = request.free_thresh;
       save_parameters.occupied_thresh = request.occupied_thresh;
       save_parameters.mode = mode;
+      // nav2's writer has no progress of its own: report its start and end.
+      report(progress, Phase::WRITING, 0, 1);
       saved = nav2_map_server::saveMapToFile(map, save_parameters);
+      report(progress, Phase::WRITING, 1, 1);
     } else {
       saved = saveMapDirect(
         map, staged_basename, request.image_format, mode, request.free_thresh,
-        request.occupied_thresh, logger);
+        request.occupied_thresh, progress, logger);
     }
   } catch (const std::exception & e) {
     return fail(
@@ -520,11 +591,13 @@ std::string validate(const RenderRequest & request)
   return "";
 }
 
-RenderResult renderPosegraph(const RenderRequest & request, const rclcpp::Node::SharedPtr & node)
+RenderResult renderPosegraph(
+  const RenderRequest & request, const rclcpp::Node::SharedPtr & node,
+  const ProgressCallback & progress)
 {
   RenderResult result;
   try {
-    result = render(request, node);
+    result = render(request, node, progress);
   } catch (const std::bad_alloc &) {
     result = fail(result, ResultCode::OUT_OF_MEMORY, "out of memory.", node->get_logger());
   } catch (const karto::Exception & e) {

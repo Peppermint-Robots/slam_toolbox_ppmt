@@ -32,12 +32,41 @@
 
 // SLAM Toolbox
 #include "slam_toolbox/map_rasterizer.hpp"
+#include "slam_toolbox_ppmt/msg/rasterize_progress.hpp"
 #include "slam_toolbox_ppmt/srv/rasterize_posegraph.hpp"
 
 namespace
 {
 
 using RasterizePosegraph = slam_toolbox_ppmt::srv::RasterizePosegraph;
+using RasterizeProgress = slam_toolbox_ppmt::msg::RasterizeProgress;
+
+// Publishes a render's progress, but only when the phase or its whole percent changes, not
+// on every scan and row. Phase values match RasterizeProgress's PHASE_* constants.
+struct ProgressPublisher
+{
+  rclcpp::Publisher<RasterizeProgress>::SharedPtr pub;
+  std::string posegraph;
+  int last_phase = -1;  // -1: nothing published yet
+  uint32_t last_percent = 0;
+
+  void operator()(map_rasterizer::Phase phase, uint32_t done, uint32_t total)
+  {
+    const uint32_t percent = total > 0 ? static_cast<uint32_t>(100ull * done / total) : 0;
+    if (static_cast<int>(phase) == last_phase && percent == last_percent) {
+      return;
+    }
+    last_phase = static_cast<int>(phase);
+    last_percent = percent;
+
+    RasterizeProgress msg;
+    msg.posegraph = posegraph;
+    msg.phase = static_cast<uint8_t>(phase);
+    msg.done = done;
+    msg.total = total;
+    pub->publish(msg);
+  }
+};
 
 class MapRasterizerServer
 {
@@ -54,6 +83,10 @@ public:
       "~/rasterize",
       std::bind(&MapRasterizerServer::handle, this, std::placeholders::_1, std::placeholders::_2),
       rmw_qos_profile_services_default, callback_group_);
+
+    // Progress of the render in flight, so a caller can show it while the service call waits.
+    progress_pub_ =
+      node_->create_publisher<RasterizeProgress>("~/progress", rclcpp::QoS(1).reliable());
 
     RCLCPP_INFO(node_->get_logger(), "map_rasterizer: serving %s.", service_->get_service_name());
   }
@@ -97,8 +130,12 @@ private:
     map_rasterizer::RenderResult result;
     boost::thread::attributes attributes;
     attributes.set_stack_size(static_cast<std::size_t>(stack_size_));
-    boost::thread worker(
-      attributes, [&]() { result = map_rasterizer::renderPosegraph(render_request, node_); });
+    // std::ref: the core copies the callback, and every copy must update this one publisher.
+    ProgressPublisher progress_publisher{progress_pub_, request->posegraph};
+    const map_rasterizer::ProgressCallback progress = std::ref(progress_publisher);
+    boost::thread worker(attributes, [&]() {
+      result = map_rasterizer::renderPosegraph(render_request, node_, progress);
+    });
     worker.join();
 
     response->result = static_cast<uint8_t>(result.code);
@@ -114,6 +151,7 @@ private:
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::Service<RasterizePosegraph>::SharedPtr service_;
+  rclcpp::Publisher<RasterizeProgress>::SharedPtr progress_pub_;
   std::atomic<bool> busy_{false};
   int64_t stack_size_ = map_rasterizer::kDefaultStackSize;
 };

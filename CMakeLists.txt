@@ -108,6 +108,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   srv/DeserializePoseGraph.srv
   srv/SerializePoseGraph.srv
   srv/RasterizePosegraph.srv
+  msg/RasterizeProgress.msg
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs nav_msgs visualization_msgs
 )
 
