@@ -32,6 +32,7 @@ find_package(rviz_rendering REQUIRED)
 find_package(interactive_markers REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets Test Concurrent)
 find_package(rclcpp_components REQUIRED)
+find_package(nav2_map_server REQUIRED)
 
 #karto_sdk lib
 set(BUILD_SHARED_LIBS ON)
@@ -106,6 +107,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   srv/AddSubmap.srv
   srv/DeserializePoseGraph.srv
   srv/SerializePoseGraph.srv
+  srv/RasterizePosegraph.srv
+  msg/RasterizeProgress.msg
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs nav_msgs visualization_msgs
 )
 
@@ -179,6 +182,22 @@ target_link_libraries(map_and_localization_slam_toolbox_node map_and_localizatio
 add_executable(merge_maps_kinematic src/merge_maps_kinematic.cpp)
 target_link_libraries(merge_maps_kinematic kartoSlamToolbox toolbox_common)
 
+#### Offline pose-graph rasterizer
+# Renders a serialized pose graph to an image + yaml at an arbitrary resolution. The core
+# is a library shared by the CLI and the map_rasterizer/rasterize service node.
+find_package(PNG REQUIRED)
+add_library(map_rasterizer_core src/map_rasterizer_core.cpp)
+ament_target_dependencies(map_rasterizer_core ${dependencies} nav2_map_server)
+target_link_libraries(map_rasterizer_core kartoSlamToolbox toolbox_common PNG::PNG)
+
+add_executable(map_rasterizer src/map_rasterizer.cpp)
+target_link_libraries(map_rasterizer map_rasterizer_core)
+
+add_executable(map_rasterizer_server src/map_rasterizer_server.cpp)
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(
+  map_rasterizer_server map_rasterizer_core ${Boost_LIBRARIES} "${cpp_typesupport_target}")
+
 #### testing
 #if(BUILD_TESTING)
 #  find_package(ament_cmake_gtest REQUIRED)
@@ -201,6 +220,9 @@ install(TARGETS async_slam_toolbox_node
                 localization_slam_toolbox_node
                 map_and_localization_slam_toolbox_node
                 merge_maps_kinematic
+                map_rasterizer
+                map_rasterizer_server
+                map_rasterizer_core
                 ${libraries}
                 kartoSlamToolbox
   ARCHIVE DESTINATION lib
