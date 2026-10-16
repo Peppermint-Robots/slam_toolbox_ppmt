@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Simbe Robotics, Inc.
+ * Copyright (c) 2026, Peppermint Robotics
  *
  * THE WORK (AS DEFINED BELOW) IS PROVIDED UNDER THE TERMS OF THIS CREATIVE
  * COMMONS PUBLIC LICENSE ("CCPL" OR "LICENSE"). THE WORK IS PROTECTED BY
