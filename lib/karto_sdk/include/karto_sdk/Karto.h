@@ -6544,7 +6544,9 @@ public:
       // registered, e.g. after a .data that failed to load part-way.
       try {
         karto::SensorManager::GetInstance()->UnregisterSensor(iter->second);
-      } catch (const Exception &) {
+      } catch (const Exception & e) {
+        std::cerr << "Dataset::Clear: skipped unregistering a sensor: " << e.GetErrorMessage()
+                  << std::endl;
       }
     }
 
