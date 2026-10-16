@@ -1,8 +1,7 @@
 # Render a serialized pose graph to a map image + yaml, as map_rasterizer does.
 # Served by map_rasterizer_server as map_rasterizer/rasterize.
 
-string posegraph          # basename, without the .posegraph/.data suffix
-string output             # basename, without extension; written atomically
+string basename           # reads <basename>.posegraph/.data, writes <basename>.<format>/.yaml
 float64 resolution        # metres per cell
 string format             # "png" or "pgm"
 float64 free_thresh       # 0-1

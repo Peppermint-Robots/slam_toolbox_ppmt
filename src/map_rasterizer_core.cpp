@@ -388,7 +388,7 @@ RenderResult render(
   const auto deserialize_started = std::chrono::steady_clock::now();
 
   for (const char * extension : {".posegraph", ".data"}) {
-    const std::string file = request.posegraph + extension;
+    const std::string file = request.basename + extension;
     if (!std::filesystem::exists(file)) {
       return fail(result, ResultCode::LOAD_FAILED, "'" + file + "' does not exist.", logger);
     }
@@ -406,19 +406,19 @@ RenderResult render(
   std::string load_error;
   bool loaded = false;
   try {
-    loaded = serialization::read(request.posegraph, mapper, dataset, node);
+    loaded = serialization::read(request.basename, mapper, dataset, node);
   } catch (const std::bad_alloc &) {
-    load_error = "ran out of memory reading '" + request.posegraph +
+    load_error = "ran out of memory reading '" + request.basename +
                  "' -- the .data is likely corrupt or from a different save than the "
                  ".posegraph.";
   } catch (const karto::Exception & e) {
-    load_error = "failed to read pose graph '" + request.posegraph + "': " + e.GetErrorMessage();
+    load_error = "failed to read pose graph '" + request.basename + "': " + e.GetErrorMessage();
   } catch (const std::exception & e) {
-    load_error = "failed to read pose graph '" + request.posegraph + "': " + e.what();
+    load_error = "failed to read pose graph '" + request.basename + "': " + e.what();
   }
   if (load_error.empty() && !loaded) {
-    load_error = "failed to read pose graph '" + request.posegraph + "' (expected " +
-                 request.posegraph + ".posegraph and " + request.posegraph + ".data).";
+    load_error = "failed to read pose graph '" + request.basename + "' (expected " +
+                 request.basename + ".posegraph and " + request.basename + ".data).";
   }
   if (!load_error.empty()) {
     return fail(result, ResultCode::LOAD_FAILED, load_error, logger);
@@ -496,7 +496,7 @@ RenderResult render(
   // so the renames stay on one filesystem and are atomic; under the final basename,
   // so the yaml's image: key needs no rewriting.
   namespace fs = std::filesystem;
-  const fs::path output(request.output);
+  const fs::path output(request.basename);
   const fs::path output_dir = output.parent_path().empty() ? fs::path(".") : output.parent_path();
   std::string staging_template =
     (output_dir / (".render_" + output.filename().string() + "_XXXXXX")).string();
@@ -535,17 +535,17 @@ RenderResult render(
   }
   if (!saved) {
     return fail(
-      result, ResultCode::WRITE_FAILED, "failed to write '" + request.output + "'.", logger);
+      result, ResultCode::WRITE_FAILED, "failed to write '" + request.basename + "'.", logger);
   }
 
   // Move the image and yaml out of staged directory.
   for (const std::string & extension : {request.image_format, std::string("yaml")}) {
     std::error_code ec;
-    fs::rename(staged_basename + "." + extension, request.output + "." + extension, ec);
+    fs::rename(staged_basename + "." + extension, request.basename + "." + extension, ec);
     if (ec) {
       return fail(
         result, ResultCode::WRITE_FAILED,
-        "could not move the rendered " + extension + " into place at '" + request.output + "." +
+        "could not move the rendered " + extension + " into place at '" + request.basename + "." +
           extension + "': " + ec.message(),
         logger);
     }
@@ -554,7 +554,7 @@ RenderResult render(
 
   RCLCPP_INFO(
     logger, "map_rasterizer: wrote %s.%s + %s.yaml in %.1f s (%.1f s total).",
-    request.output.c_str(), request.image_format.c_str(), request.output.c_str(), result.write_s,
+    request.basename.c_str(), request.image_format.c_str(), request.basename.c_str(), result.write_s,
     result.raster_s + result.write_s);
 
   result.code = ResultCode::SUCCESS;
@@ -565,11 +565,8 @@ RenderResult render(
 
 std::string validate(const RenderRequest & request)
 {
-  if (request.posegraph.empty()) {
-    return "posegraph is required.";
-  }
-  if (request.output.empty()) {
-    return "output is required.";
+  if (request.basename.empty()) {
+    return "basename is required.";
   }
   if (!(request.resolution > 0.0) || !std::isfinite(request.resolution)) {
     return "resolution must be > 0.";

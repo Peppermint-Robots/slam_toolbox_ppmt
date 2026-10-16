@@ -65,8 +65,8 @@ constexpr long long kDefaultStackSize = 40000000LL;
 
 struct RenderRequest
 {
-  std::string posegraph;  // basename, without the .posegraph/.data suffix
-  std::string output;     // basename, without extension
+  // Reads <basename>.posegraph + .data; writes <basename>.<format> + .yaml next to them.
+  std::string basename;
   double resolution = 0.01;
   double occupied_thresh = 0.65;
   double free_thresh = 0.1;
@@ -91,7 +91,7 @@ struct RenderResult
 // Empty if `request` is usable, otherwise what is wrong with it.
 std::string validate(const RenderRequest & request);
 
-// Renders request.posegraph to request.output.<format> + .yaml.
+// Renders request.basename's pose graph to request.basename.<format> + .yaml.
 RenderResult renderPosegraph(
   const RenderRequest & request, const rclcpp::Node::SharedPtr & node,
   const ProgressCallback & progress = {});

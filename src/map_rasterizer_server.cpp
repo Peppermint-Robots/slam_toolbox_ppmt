@@ -46,7 +46,7 @@ using RasterizeProgress = slam_toolbox_ppmt::msg::RasterizeProgress;
 struct ProgressPublisher
 {
   rclcpp::Publisher<RasterizeProgress>::SharedPtr pub;
-  std::string posegraph;
+  std::string basename;
   int last_phase = -1;  // -1: nothing published yet
   uint32_t last_percent = 0;
 
@@ -60,7 +60,7 @@ struct ProgressPublisher
     last_percent = percent;
 
     RasterizeProgress msg;
-    msg.posegraph = posegraph;
+    msg.basename = basename;
     msg.phase = static_cast<uint8_t>(phase);
     msg.done = done;
     msg.total = total;
@@ -100,7 +100,7 @@ private:
       response->result = RasterizePosegraph::Response::RESULT_BUSY;
       response->message = "a render is already running.";
       RCLCPP_WARN(
-        node_->get_logger(), "map_rasterizer: rejected '%s': %s", request->posegraph.c_str(),
+        node_->get_logger(), "map_rasterizer: rejected '%s': %s", request->basename.c_str(),
         response->message.c_str());
       return;
     }
@@ -112,16 +112,15 @@ private:
     } clear_busy{busy_};
 
     map_rasterizer::RenderRequest render_request;
-    render_request.posegraph = request->posegraph;
-    render_request.output = request->output;
+    render_request.basename = request->basename;
     render_request.resolution = request->resolution;
     render_request.image_format = request->format;
     render_request.free_thresh = request->free_thresh;
     render_request.occupied_thresh = request->occupied_thresh;
 
     RCLCPP_INFO(
-      node_->get_logger(), "map_rasterizer: rendering '%s' -> '%s' at %.4f m/cell.",
-      request->posegraph.c_str(), request->output.c_str(), request->resolution);
+      node_->get_logger(), "map_rasterizer: rendering '%s' at %.4f m/cell.",
+      request->basename.c_str(), request->resolution);
 
     // Deserializing recurses through the pose graph. Executor threads get glibc's
     // default 8 MB stack, which a large graph overflows, and RLIMIT_STACK cannot help
@@ -131,7 +130,7 @@ private:
     boost::thread::attributes attributes;
     attributes.set_stack_size(static_cast<std::size_t>(stack_size_));
     // std::ref: the core copies the callback, and every copy must update this one publisher.
-    ProgressPublisher progress_publisher{progress_pub_, request->posegraph};
+    ProgressPublisher progress_publisher{progress_pub_, request->basename};
     const map_rasterizer::ProgressCallback progress = std::ref(progress_publisher);
     boost::thread worker(attributes, [&]() {
       result = map_rasterizer::renderPosegraph(render_request, node_, progress);

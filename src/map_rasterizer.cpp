@@ -44,14 +44,14 @@ struct Options
 };
 
 const char * kUsage =
-  "Usage: map_rasterizer --posegraph <basename> --output <basename> [options]\n"
+  "Usage: map_rasterizer --basename <basename> [options]\n"
   "\n"
-  "  Renders a serialized slam_toolbox pose graph to <output>.<fmt> + <output>.yaml.\n"
+  "  Renders a serialized slam_toolbox pose graph to <basename>.<fmt> + <basename>.yaml.\n"
   "\n"
   "Required:\n"
-  "  --posegraph <basename>   Pose graph basename, WITHOUT the .posegraph/.data\n"
+  "  --basename <basename>    Pose graph basename, WITHOUT the .posegraph/.data\n"
   "                           suffix (both files must sit next to each other).\n"
-  "  --output <basename>      Output basename, without extension.\n"
+  "                           The map is written next to them, under the same name.\n"
   "\n"
   "Options:\n"
   "  --resolution <m>         Metres per cell (default 0.01).\n"
@@ -116,12 +116,8 @@ bool parseArgs(int argc, char ** argv, const rclcpp::Logger & logger, Options & 
     if (arg == "--help" || arg == "-h") {
       help = true;
       return true;
-    } else if (arg == "--posegraph") {
-      if (!takeValue(argc, argv, i, logger, opts.request.posegraph)) {
-        return false;
-      }
-    } else if (arg == "--output") {
-      if (!takeValue(argc, argv, i, logger, opts.request.output)) {
+    } else if (arg == "--basename") {
+      if (!takeValue(argc, argv, i, logger, opts.request.basename)) {
         return false;
       }
     } else if (arg == "--resolution") {
@@ -156,12 +152,8 @@ bool parseArgs(int argc, char ** argv, const rclcpp::Logger & logger, Options & 
     }
   }
 
-  if (opts.request.posegraph.empty()) {
-    RCLCPP_ERROR(logger, "map_rasterizer: --posegraph is required.");
-    return false;
-  }
-  if (opts.request.output.empty()) {
-    RCLCPP_ERROR(logger, "map_rasterizer: --output is required.");
+  if (opts.request.basename.empty()) {
+    RCLCPP_ERROR(logger, "map_rasterizer: --basename is required.");
     return false;
   }
   if (opts.request.resolution <= 0.0) {
