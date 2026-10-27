@@ -56,6 +56,9 @@ public:
   // get a node's current pose yaw
   virtual void GetNodeOrientation(const int & unique_id, double & pose);
 
+  // Pins an already-added node constant so Compute() never moves it
+  virtual void PinNodeConstant(int id);
+
 private:
   // karto
   karto::ScanSolver::IdPoseVector corrections_;
