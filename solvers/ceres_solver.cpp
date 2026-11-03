@@ -348,6 +348,28 @@ void CeresSolver::AddConstraint(karto::Edge<karto::LocalizedRangeScan> * pEdge)
 }
 
 /*****************************************************************************/
+void CeresSolver::PinNodeConstant(int id)
+/*****************************************************************************/
+{
+  boost::mutex::scoped_lock lock(nodes_mutex_);
+  GraphIterator it = nodes_->find(id);
+  if (it == nodes_->end()) {
+    RCLCPP_WARN(node_->get_logger(), "PinNodeConstant: id %d not found in nodes_", id);
+    return;
+  }
+  if (problem_->HasParameterBlock(&it->second(0)) &&
+    problem_->HasParameterBlock(&it->second(1)) &&
+    problem_->HasParameterBlock(&it->second(2)))
+  {
+    problem_->SetParameterBlockConstant(&it->second(0));
+    problem_->SetParameterBlockConstant(&it->second(1));
+    problem_->SetParameterBlockConstant(&it->second(2));
+  } else {
+    RCLCPP_WARN(node_->get_logger(), "PinNodeConstant: id %d has no parameter block yet", id);
+  }
+}
+
+/*****************************************************************************/
 void CeresSolver::RemoveNode(kt_int32s id)
 /*****************************************************************************/
 {
