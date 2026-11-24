@@ -272,6 +272,16 @@ public:
     kt_int32s height = 0;
     karto::Vector2<kt_double> offset;
     ComputeDimensions(scans, resolution, width, height, offset);
+    // karto's Grid sizes its buffer as kt_int32s (AlignValue<8>(width) * height): past
+    // INT32_MAX cells it wraps or crashes, so refuse such a grid here.
+    const int64_t width_step = (static_cast<int64_t>(width) + 7) & ~static_cast<int64_t>(7);
+    if (width <= 0 || height <= 0 || width_step * height > INT32_MAX) {
+      throw karto::Exception(
+        "the map is too large: the grid would be " + std::to_string(width) + " x " +
+        std::to_string(height) +
+        " cells, over karto's limit of 2147483647 cells. Use a "
+        "coarser resolution.");
+    }
     std::unique_ptr<ReportingOccupancyGrid> grid(
       new ReportingOccupancyGrid(width, height, offset, resolution, progress));
     grid->CreateFromScans(scans);
