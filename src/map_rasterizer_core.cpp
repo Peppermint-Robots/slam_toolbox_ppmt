@@ -206,11 +206,13 @@ bool writeYaml(
 {
   const double yaw = tf2::getYaw(map.info.origin.orientation);
 
+  // Significant digits: 6 for the resolution (a float), 9 for the origin (exact to 1 mm).
   std::ostringstream o;
-  o << std::setprecision(3);
+  o << std::setprecision(6);
   o << "image: " << image_name << "\n";
   o << "mode: " << nav2_map_server::map_mode_to_string(mode) << "\n";
   o << "resolution: " << map.info.resolution << "\n";
+  o << std::setprecision(9);
   o << "origin: [" << map.info.origin.position.x << ", " << map.info.origin.position.y << ", "
     << yaw << "]\n";
   o << "negate: 0\n";
@@ -272,6 +274,16 @@ public:
     kt_int32s height = 0;
     karto::Vector2<kt_double> offset;
     ComputeDimensions(scans, resolution, width, height, offset);
+    // karto's Grid sizes its buffer as kt_int32s (AlignValue<8>(width) * height): past
+    // INT32_MAX cells it wraps or crashes, so refuse such a grid here.
+    const int64_t width_step = (static_cast<int64_t>(width) + 7) & ~static_cast<int64_t>(7);
+    if (width <= 0 || height <= 0 || width_step * height > INT32_MAX) {
+      throw karto::Exception(
+        "the map is too large: the grid would be " + std::to_string(width) + " x " +
+        std::to_string(height) +
+        " cells, over karto's limit of 2147483647 cells. Use a "
+        "coarser resolution.");
+    }
     std::unique_ptr<ReportingOccupancyGrid> grid(
       new ReportingOccupancyGrid(width, height, offset, resolution, progress));
     grid->CreateFromScans(scans);
@@ -554,8 +566,8 @@ RenderResult render(
 
   RCLCPP_INFO(
     logger, "map_rasterizer: wrote %s.%s + %s.yaml in %.1f s (%.1f s total).",
-    request.basename.c_str(), request.image_format.c_str(), request.basename.c_str(), result.write_s,
-    result.raster_s + result.write_s);
+    request.basename.c_str(), request.image_format.c_str(), request.basename.c_str(),
+    result.write_s, result.raster_s + result.write_s);
 
   result.code = ResultCode::SUCCESS;
   return result;
